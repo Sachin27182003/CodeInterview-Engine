@@ -1,0 +1,11 @@
+FROM node:22-alpine
+
+RUN apk add --no-cache python3 openjdk17-jdk gcc g++ \
+    && addgroup -S runner \
+    && adduser -S -G runner runner
+
+COPY runner.sh /usr/local/bin/run-code
+RUN chmod 0555 /usr/local/bin/run-code
+
+USER runner
+WORKDIR /workspace
