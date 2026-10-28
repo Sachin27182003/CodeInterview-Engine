@@ -1,69 +1,205 @@
-import Image from "next/image";
+"use client";
+
+import Editor from "@monaco-editor/react";
+import { useEffect, useState } from "react";
+
+type Language = "javascript" | "python" | "java" | "c" | "cpp";
+
+type ExecutionResult = {
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  exitCode: number | null;
+};
+
+type JobStatus = "queued" | "waiting" | "active" | "completed" | "failed";
+
+type JobResponse = {
+  jobId: string;
+  status: JobStatus;
+  result?: ExecutionResult;
+  error?: string;
+};
+
+const examples: Record<Language, string> = {
+  javascript: 'console.log("Hello from CodeOracle!");',
+  python: 'print("Hello from CodeOracle!")',
+  java: `public class Main {
+  public static void main(String[] args) {
+    System.out.println("Hello from CodeOracle!");
+  }
+}`,
+  c: `#include <stdio.h>
+
+int main(void) {
+  printf("Hello from CodeOracle!\\n");
+  return 0;
+}`,
+  cpp: `#include <iostream>
+
+int main() {
+  std::cout << "Hello from CodeOracle!\\n";
+  return 0;
+}`,
+};
+
+const apiUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
 
 export default function Home() {
+  const [language, setLanguage] = useState<Language>("javascript");
+  const [code, setCode] = useState(examples.javascript);
+  const [result, setResult] = useState<ExecutionResult | null>(null);
+  const [error, setError] = useState("");
+  const [isRunning, setIsRunning] = useState(false);
+  const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!jobId) return;
+
+    let cancelled = false;
+    const pollStatus = async () => {
+      try {
+        const response = await fetch(`${apiUrl}/status/${encodeURIComponent(jobId)}`);
+        const payload = (await response.json()) as JobResponse | { error?: string };
+        if (!response.ok) {
+          throw new Error("error" in payload && payload.error ? payload.error : "Unable to read execution status");
+        }
+        if (cancelled) return;
+
+        const job = payload as JobResponse;
+        setJobStatus(job.status);
+        if (job.status === "completed" && job.result) {
+          setResult(job.result);
+          setIsRunning(false);
+          setJobId(null);
+        } else if (job.status === "failed") {
+          setError(job.error ?? "Code execution failed");
+          setIsRunning(false);
+          setJobId(null);
+        }
+      } catch (requestError) {
+        if (cancelled) return;
+        setError(requestError instanceof Error ? requestError.message : "Unable to read execution status");
+        setIsRunning(false);
+        setJobId(null);
+      }
+    };
+
+    void pollStatus();
+    const intervalId = window.setInterval(() => void pollStatus(), 250);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [jobId]);
+
+  const handleLanguageChange = (nextLanguage: Language) => {
+    setLanguage(nextLanguage);
+    setCode(examples[nextLanguage]);
+    setResult(null);
+    setError("");
+  };
+
+  const runCode = async () => {
+    setIsRunning(true);
+    setError("");
+    setResult(null);
+    setJobStatus(null);
+
+    try {
+      const response = await fetch(`${apiUrl}/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, language }),
+      });
+      const payload = (await response.json()) as JobResponse | { error?: string };
+
+      if (!response.ok) {
+        throw new Error("error" in payload && payload.error ? payload.error : "Unable to queue code execution");
+      }
+
+      setJobId((payload as JobResponse).jobId);
+      setJobStatus("queued");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to reach the execution service");
+      setIsRunning(false);
+      return;
+    }
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <main className="editor-shell">
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">CODEORACLE</p>
+          <h1>Code editor</h1>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+        <div className="toolbar">
+          <label htmlFor="language">Language</label>
+          <select
+            id="language"
+            value={language}
+            onChange={(event) => handleLanguageChange(event.target.value as Language)}
           >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
+            <option value="javascript">JavaScript</option>
+            <option value="python">Python</option>
+            <option value="java">Java</option>
+            <option value="c">C</option>
+            <option value="cpp">C++</option>
+          </select>
+          <button type="button" className="run-button" onClick={runCode} disabled={isRunning}>
+            {isRunning ? `${jobStatus === "active" ? "Running" : "Queued"}...` : "Run Code"}
+          </button>
+        </div>
+      </header>
+
+      <section className="workspace">
+        <div className="panel editor-panel">
+          <div className="panel-heading">
+            <span>Source</span>
+            <span className="file-name">main.{language === "javascript" ? "js" : language}</span>
+          </div>
+          <div className="editor-container">
+            <Editor
+              height="100%"
+              language={language === "cpp" ? "cpp" : language}
+              theme="vs-dark"
+              value={code}
+              onChange={(value) => setCode(value ?? "")}
+              options={{
+                automaticLayout: true,
+                minimap: { enabled: false },
+                fontSize: 14,
+                padding: { top: 16 },
+                scrollBeyondLastLine: false,
+              }}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+          </div>
         </div>
-      </main>
-    </div>
+
+        <div className="panel output-panel">
+          <div className="panel-heading">
+            <span>Execution output</span>
+            {jobStatus && jobStatus !== "completed" && jobStatus !== "failed" && (
+              <span className="status-pending">{jobStatus === "active" ? "Running" : "Queued"}</span>
+            )}
+            {result && (
+              <span className={result.exitCode === 0 && !result.timedOut ? "status-success" : "status-error"}>
+                {result.timedOut ? "Timed out" : `Exit code ${result.exitCode ?? "—"}`}
+              </span>
+            )}
+          </div>
+          <pre className="output">
+            {error ||
+              (result
+                ? `${result.stdout}${result.stderr ? `\n${result.stderr}` : ""}`
+                : jobStatus
+                  ? `Job ${jobStatus}. Waiting for execution output...`
+                  : "Run your code to see output here.")}
+          </pre>
+        </div>
+      </section>
+    </main>
   );
 }

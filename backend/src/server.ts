@@ -1,7 +1,7 @@
 import cors from "cors";
 import express, { type ErrorRequestHandler, type Request, type Response } from "express";
-import { runInDocker } from "./execution/dockerRunner.js";
 import type { SupportedLanguage } from "./execution/types.js";
+import { codeQueue, redisConnection } from "./queue/codeQueue.js";
 
 const app = express();
 const port = Number(process.env["PORT"] ?? 3001);
@@ -33,11 +33,45 @@ app.post("/submit", async (request: Request, response: Response): Promise<void> 
   }
 
   try {
-    const result = await runInDocker(code, language as SupportedLanguage);
-    response.json(result);
+    const job = await codeQueue.add("execute", {
+      code,
+      language: language as SupportedLanguage,
+    });
+    response.status(202).json({ jobId: job.id, status: "queued" });
   } catch (error) {
-    console.error("Code execution failed:", error);
-    response.status(503).json({ error: "The code execution service is unavailable" });
+    console.error("Could not queue code execution:", error);
+    response.status(503).json({ error: "The code execution queue is unavailable" });
+  }
+});
+
+app.get("/status/:jobId", async (request: Request, response: Response): Promise<void> => {
+  const jobIdParam = request.params["jobId"];
+  if (!jobIdParam || Array.isArray(jobIdParam)) {
+    response.status(400).json({ error: "jobId is required" });
+    return;
+  }
+  const jobId = jobIdParam;
+
+  try {
+    const job = await codeQueue.getJob(jobId);
+    if (!job) {
+      response.status(404).json({ error: "Execution job not found" });
+      return;
+    }
+
+    const state = await job.getState();
+    if (state === "completed") {
+      response.json({ jobId, status: state, result: job.returnvalue });
+      return;
+    }
+    if (state === "failed") {
+      response.json({ jobId, status: state, error: job.failedReason ?? "Code execution failed" });
+      return;
+    }
+    response.json({ jobId, status: state });
+  } catch (error) {
+    console.error("Could not read code execution status:", error);
+    response.status(503).json({ error: "The code execution queue is unavailable" });
   }
 });
 
@@ -55,5 +89,15 @@ app.use(errorHandler);
 app.listen(port, () => {
   console.log(`Code execution API listening on port ${port}`);
 });
+
+const shutdown = async (signal: string): Promise<void> => {
+  console.log(`Received ${signal}; stopping API`);
+  await codeQueue.close();
+  await redisConnection.quit();
+  process.exit(0);
+};
+
+process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
 export { app };

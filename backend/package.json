@@ -5,8 +5,12 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/server.js",
-    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "start": "concurrently --kill-others-on-fail \"npm:server\" \"npm:worker\"",
+    "server": "node dist/server.js",
+    "worker": "node dist/queue/worker.js",
+    "dev": "concurrently --kill-others-on-fail \"npm:dev:server\" \"npm:dev:worker\"",
+    "dev:server": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "dev:worker": "ts-node-dev --respawn --transpile-only src/queue/worker.ts",
     "test": "npm run build"
   },
   "keywords": [],
@@ -14,15 +18,18 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "bullmq": "^6.5.0",
     "cors": "^2.8.6",
     "dotenv": "^18.0.9",
     "express": "^5.3.0",
+    "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.5",
+    "concurrently": "^10.0.6",
     "ts-node-dev": "^2.0.0",
     "typescript": "^7.0.2"
   }
