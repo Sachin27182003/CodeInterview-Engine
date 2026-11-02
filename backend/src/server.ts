@@ -1,6 +1,8 @@
+import "dotenv/config";
 import cors from "cors";
 import express, { type ErrorRequestHandler, type Request, type Response } from "express";
-import type { SupportedLanguage } from "./execution/types.js";
+import type { ExecutionRequest, SupportedLanguage } from "./execution/types.js";
+import { prisma } from "./db.js";
 import { codeQueue, redisConnection } from "./queue/codeQueue.js";
 
 const app = express();
@@ -16,7 +18,11 @@ app.get("/health", (_request, response) => {
 });
 
 app.post("/submit", async (request: Request, response: Response): Promise<void> => {
-  const { code, language } = request.body as { code?: unknown; language?: unknown };
+  const { code, language, problemDescription } = request.body as {
+    code?: unknown;
+    language?: unknown;
+    problemDescription?: unknown;
+  };
 
   if (typeof code !== "string" || code.length === 0 || code.length > MAX_CODE_LENGTH) {
     response.status(400).json({
@@ -32,11 +38,45 @@ app.post("/submit", async (request: Request, response: Response): Promise<void> 
     return;
   }
 
+  if (problemDescription !== undefined && (typeof problemDescription !== "string" || problemDescription.length > MAX_CODE_LENGTH)) {
+    response.status(400).json({ error: `problemDescription must be a string of at most ${MAX_CODE_LENGTH} characters` });
+    return;
+  }
+
   try {
-    const job = await codeQueue.add("execute", {
+    const requestData: ExecutionRequest = {
       code,
       language: language as SupportedLanguage,
+      ...(typeof problemDescription === "string" ? { problemDescription } : {}),
+    };
+    const problem = await prisma.problem.upsert({
+      where: { slug: "two-sum" },
+      update: {},
+      create: {
+        slug: "two-sum",
+        title: "Two Sum",
+        description:
+          problemDescription ??
+          "Return the indices of two different elements whose sum equals the target.",
+        testCases: [
+          { nums: [2, 7, 11, 15], target: 9, expected: [0, 1] },
+          { nums: [3, 2, 4], target: 6, expected: [1, 2] },
+        ],
+      },
     });
+    const session = await prisma.interviewSession.create({
+      data: { problemId: problem.id },
+    });
+    const submission = await prisma.submission.create({
+      data: {
+        sessionId: session.id,
+        problemId: problem.id,
+        code,
+        language,
+      },
+    });
+    requestData.submissionId = submission.id;
+    const job = await codeQueue.add("execute", requestData);
     response.status(202).json({ jobId: job.id, status: "queued" });
   } catch (error) {
     console.error("Could not queue code execution:", error);
@@ -60,15 +100,35 @@ app.get("/status/:jobId", async (request: Request, response: Response): Promise<
     }
 
     const state = await job.getState();
+    const progress = job.progress as {
+      phase?: unknown;
+      executionResult?: unknown;
+      interview?: unknown;
+    };
+    if (state === "completed" && progress.phase === "interviewing" && progress.interview === undefined) {
+      response.json({
+        jobId,
+        status: "active",
+        progress: job.progress,
+      });
+      return;
+    }
     if (state === "completed") {
-      response.json({ jobId, status: state, result: job.returnvalue });
+      const result =
+        progress.interview !== undefined && progress.executionResult !== undefined
+          ? { ...progress.executionResult, interview: progress.interview }
+          : job.returnvalue;
+      response.json({ jobId, status: state, result });
       return;
     }
     if (state === "failed") {
       response.json({ jobId, status: state, error: job.failedReason ?? "Code execution failed" });
       return;
     }
-    response.json({ jobId, status: state });
+    const phase = progress.phase;
+    const effectiveStatus =
+      phase === "executing" || phase === "interviewing" ? "active" : state;
+    response.json({ jobId, status: effectiveStatus, progress: job.progress });
   } catch (error) {
     console.error("Could not read code execution status:", error);
     response.status(503).json({ error: "The code execution queue is unavailable" });
@@ -93,6 +153,7 @@ app.listen(port, () => {
 const shutdown = async (signal: string): Promise<void> => {
   console.log(`Received ${signal}; stopping API`);
   await codeQueue.close();
+  await prisma.$disconnect();
   await redisConnection.quit();
   process.exit(0);
 };

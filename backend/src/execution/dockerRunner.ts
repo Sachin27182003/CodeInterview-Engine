@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { ExecutionResult, SupportedLanguage } from "./types.js";
+import type { ExecutionOutput, SupportedLanguage } from "./types.js";
 
 const IMAGE = process.env["CODE_EXECUTION_IMAGE"] ?? "codeoracle-runner:latest";
 const TIMEOUT_MS = 30_000;
@@ -22,7 +22,7 @@ function appendOutput(current: string, chunk: Buffer): string {
   return current + text;
 }
 
-export function runInDocker(code: string, language: SupportedLanguage): Promise<ExecutionResult> {
+export function runInDocker(code: string, language: SupportedLanguage): Promise<ExecutionOutput> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       "docker",
@@ -46,6 +46,7 @@ export function runInDocker(code: string, language: SupportedLanguage): Promise<
         "/run/code:rw,exec,nosuid,size=16m",
         IMAGE,
         ...commandForLanguage[language],
+        "two-sum",
       ],
       { stdio: ["pipe", "pipe", "pipe"] },
     );
@@ -55,7 +56,7 @@ export function runInDocker(code: string, language: SupportedLanguage): Promise<
     let timedOut = false;
     let settled = false;
 
-    const finish = (result: ExecutionResult): void => {
+    const finish = (result: ExecutionOutput): void => {
       if (settled) return;
       settled = true;
       resolve(result);

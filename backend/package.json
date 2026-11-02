@@ -4,32 +4,40 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "prisma generate && tsc",
     "start": "concurrently --kill-others-on-fail \"npm:server\" \"npm:worker\"",
     "server": "node dist/server.js",
     "worker": "node dist/queue/worker.js",
     "dev": "concurrently --kill-others-on-fail \"npm:dev:server\" \"npm:dev:worker\"",
     "dev:server": "ts-node-dev --respawn --transpile-only src/server.ts",
     "dev:worker": "ts-node-dev --respawn --transpile-only src/queue/worker.ts",
-    "test": "npm run build"
+    "test": "npm run build",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@prisma/adapter-pg": "^7.10.1",
+    "@prisma/client": "^7.10.1",
     "bullmq": "^6.5.0",
     "cors": "^2.8.6",
     "dotenv": "^18.0.9",
     "express": "^5.3.0",
     "ioredis": "^6.0.0",
-    "jsonwebtoken": "^9.0.3"
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.5",
+    "@types/pg": "^8.23.1",
     "concurrently": "^10.0.6",
+    "prisma": "^7.10.1",
     "ts-node-dev": "^2.0.0",
     "typescript": "^7.0.2"
   }

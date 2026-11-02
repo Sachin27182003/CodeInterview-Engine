@@ -5,9 +5,82 @@
 
 generator client {
   provider = "prisma-client"
-  output   = "../generated/prisma"
+  output   = "../src/generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+model User {
+  id        String            @id @default(uuid())
+  email     String?           @unique
+  name      String?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  sessions  InterviewSession[]
+}
+
+model Problem {
+  id          String            @id @default(uuid())
+  slug        String            @unique
+  title       String
+  description String
+  testCases   Json
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  sessions    InterviewSession[]
+  submissions Submission[]
+}
+
+model InterviewSession {
+  id          String       @id @default(uuid())
+  userId      String?
+  problemId   String
+  status      SessionStatus @default(ACTIVE)
+  startedAt   DateTime     @default(now())
+  completedAt DateTime?
+  user        User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  problem     Problem      @relation(fields: [problemId], references: [id], onDelete: Restrict)
+  submissions Submission[]
+
+  @@index([userId])
+  @@index([problemId])
+}
+
+model Submission {
+  id                String           @id @default(uuid())
+  sessionId         String
+  problemId         String
+  code              String
+  language          String
+  status            SubmissionStatus @default(QUEUED)
+  executionTimeMs   Int?
+  stdout            String?
+  stderr            String?
+  exitCode          Int?
+  timedOut          Boolean          @default(false)
+  aiFeedback        String?
+  aiFeedbackAvailable Boolean?
+  createdAt         DateTime         @default(now())
+  completedAt       DateTime?
+  session           InterviewSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  problem           Problem          @relation(fields: [problemId], references: [id], onDelete: Restrict)
+
+  @@index([sessionId, createdAt])
+  @@index([problemId, createdAt])
+  @@index([status])
+}
+
+enum SessionStatus {
+  ACTIVE
+  COMPLETED
+  ABANDONED
+}
+
+enum SubmissionStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
 }
