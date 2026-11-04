@@ -1,7 +1,9 @@
 "use client";
 
 import Editor from "@monaco-editor/react";
-import { useEffect, useState } from "react";
+import Vapi from "@vapi-ai/web";
+import { io } from "socket.io-client";
+import { useEffect, useRef, useState } from "react";
 
 type Language = "javascript" | "python" | "java" | "c" | "cpp";
 
@@ -18,16 +20,18 @@ type ExecutionResult = {
 
 type JobStatus = "queued" | "waiting" | "active" | "completed" | "failed";
 type JobPhase = "executing" | "interviewing";
+type JobProgress = {
+  phase?: JobPhase | "completed";
+  executionResult?: Omit<ExecutionResult, "interview">;
+  interview?: ExecutionResult["interview"];
+};
 
 type JobResponse = {
   jobId: string;
   status: JobStatus;
   result?: ExecutionResult;
   error?: string;
-  progress?: {
-    phase?: JobPhase;
-    executionResult?: Omit<ExecutionResult, "interview">;
-  };
+  progress?: JobProgress;
 };
 
 const examples: Record<Language, string> = {
@@ -56,7 +60,34 @@ std::vector<int> twoSum(const std::vector<int>& nums, int target) {
 
 const apiUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
 const defaultProblem =
-  "Implement only the required function (do not write a main program or read input). Given an array of integers and a target value, return the indices of two different elements whose sum equals the target. Assume exactly one valid pair exists. Hidden test cases will call your function. Aim for better than O(n²) time and explain the trade-off of your approach.";
+  "Given an array of integers and a target value, return the indices of two different elements whose sum equals the target. Expected time complexity: O(n). Expected space complexity: O(n).";
+const vapiPublicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY;
+const vapiAssistantId = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
+
+function getVoiceErrorMessage(error: unknown): string {
+  if (!error || typeof error !== "object") {
+    return "Voice interview is unavailable. Please try again later.";
+  }
+
+  const root = error as {
+    error?: { error?: { message?: unknown }; message?: unknown };
+    message?: unknown;
+  };
+  const nestedMessage = root.error?.error?.message;
+  const message =
+    typeof nestedMessage === "string"
+      ? nestedMessage
+      : typeof root.error?.message === "string"
+        ? root.error.message
+        : typeof root.message === "string"
+          ? root.message
+          : "";
+
+  if (message.toLowerCase().includes("wallet balance is 0")) {
+    return "Voice interview is temporarily unavailable because the Vapi account has no credits.";
+  }
+  return message || "Voice interview is unavailable. Please try again later.";
+}
 
 export default function Home() {
   const [language, setLanguage] = useState<Language>("javascript");
@@ -67,85 +98,204 @@ export default function Home() {
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [problemDescription, setProblemDescription] = useState(defaultProblem);
+  const [isVoiceActive, setIsVoiceActive] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState("Voice assistant is ready");
+  const [voiceError, setVoiceError] = useState("");
+  const vapiRef = useRef<Vapi | null>(null);
+  const spokenFeedbackRef = useRef<string | null>(null);
+  const voiceStartedRef = useRef(false);
+  const callStartResolverRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!jobId) return;
 
-    let cancelled = false;
-    let requestInFlight = false;
-    const pollStatus = async () => {
-      if (requestInFlight) return;
-      requestInFlight = true;
-      try {
-        const response = await fetch(
-          `${apiUrl}/status/${encodeURIComponent(jobId)}`,
-        );
-        const payload = (await response.json()) as
-          | JobResponse
-          | { error?: string };
-        if (!response.ok) {
-          throw new Error(
-            "error" in payload && payload.error
-              ? payload.error
-              : "Unable to read execution status",
-          );
-        }
-        if (cancelled) return;
+    const socket = io(apiUrl);
+    socket.emit("job:subscribe", jobId);
+    socket.on("job:progress", (payload: { jobId: string; progress: JobProgress }) => {
+      if (payload.jobId !== jobId) return;
+      const { progress } = payload;
+      if (progress.phase === "executing" || progress.phase === "interviewing") {
+        setJobStatus("active");
+      }
+      if (progress.executionResult) {
+        setResult((currentResult) => currentResult ?? progress.executionResult ?? null);
+      }
+    });
 
-        const job = payload as JobResponse;
-        const phase = job.progress?.phase;
-        setJobStatus((currentStatus) => {
-          if (job.status === "completed" || job.status === "failed") {
-            return job.status;
+    socket.on("job:completed", (payload: { jobId: string; result?: ExecutionResult }) => {
+      if (payload.jobId !== jobId) return;
+      if (payload.result) setResult(payload.result);
+      setJobStatus("completed");
+      setIsRunning(false);
+      setJobId(null);
+    });
+
+    socket.on("job:failed", (payload: { jobId: string; error?: string }) => {
+      if (payload.jobId !== jobId) return;
+      setError(payload.error ?? "Code execution failed");
+      setJobStatus("failed");
+      setIsRunning(false);
+      setJobId(null);
+    });
+
+    socket.on("connect_error", () => {
+      setError("Unable to connect to the real-time execution service");
+      setIsRunning(false);
+      setJobId(null);
+    });
+
+    return () => {
+      socket.emit("job:unsubscribe", jobId);
+      socket.disconnect();
+    };
+  }, [jobId]);
+
+  useEffect(() => {
+    if (!vapiPublicKey || !vapiAssistantId) return;
+    const vapi = new Vapi(vapiPublicKey);
+    vapiRef.current = vapi;
+    vapi.on("call-start", () => {
+      voiceStartedRef.current = true;
+      callStartResolverRef.current?.();
+      callStartResolverRef.current = null;
+      setIsVoiceActive(true);
+      setVoiceStatus("Listening for your response...");
+    });
+    vapi.on("call-end", () => {
+      voiceStartedRef.current = false;
+      setIsVoiceActive(false);
+      setIsSpeaking(false);
+      setVoiceStatus("Voice session ended. Run code again to restart it.");
+    });
+    vapi.on("speech-start", () => {
+      setIsSpeaking(true);
+      setVoiceStatus("AI interviewer is speaking...");
+    });
+    vapi.on("speech-end", () => {
+      setIsSpeaking(false);
+      setVoiceStatus("Listening for your response...");
+    });
+    vapi.on("volume-level", (volume) => {
+      if (volume > 0.03) {
+        setIsSpeaking(true);
+        setVoiceStatus("AI interviewer is speaking...");
+      }
+    });
+    vapi.on("message", (message: unknown) => {
+      if (!message || typeof message !== "object") return;
+      const event = message as {
+        type?: unknown;
+        role?: unknown;
+        transcriptType?: unknown;
+        transcript?: unknown;
+      };
+      if (
+        event.type === "transcript" &&
+        event.role === "user" &&
+        typeof event.transcript === "string" &&
+        (event.transcriptType === undefined || event.transcriptType === "final")
+      ) {
+        setVoiceStatus("AI interviewer is thinking...");
+      }
+    });
+    vapi.on("error", (voiceErrorEvent) => {
+      const message = getVoiceErrorMessage(voiceErrorEvent);
+      if (!message.toLowerCase().includes("meeting has ended")) {
+        setVoiceError(message);
+      }
+      voiceStartedRef.current = false;
+      setIsVoiceActive(false);
+      setIsSpeaking(false);
+      setVoiceStatus(message);
+    });
+    return () => {
+      if (voiceStartedRef.current) {
+        void vapi.stop().catch(() => undefined);
+      }
+      vapiRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const feedback = result?.interview;
+    if (
+      !feedback?.available ||
+      !feedback.response ||
+      !vapiRef.current ||
+      !vapiAssistantId ||
+      voiceError ||
+      spokenFeedbackRef.current === feedback.response
+    ) {
+      return;
+    }
+
+    spokenFeedbackRef.current = feedback.response;
+    const speakFeedback = async () => {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error("Microphone access is not available in this browser");
+        }
+        const microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
+        microphone.getTracks().forEach((track) => track.stop());
+        if (!isVoiceActive) {
+          voiceStartedRef.current = false;
+          const callStarted = new Promise<void>((resolve) => {
+            callStartResolverRef.current = resolve;
+          });
+          await vapiRef.current?.start(vapiAssistantId, {
+            firstMessageMode: "assistant-waits-for-user",
+            firstMessageInterruptionsEnabled: false,
+            maxDurationSeconds: 1800,
+            startSpeakingPlan: { waitSeconds: 0.6 },
+            stopSpeakingPlan: { numWords: 1, voiceSeconds: 0.2, backoffSeconds: 0.8 },
+          });
+          if (!voiceStartedRef.current) {
+            await Promise.race([
+              callStarted,
+              new Promise<void>((_, reject) =>
+                window.setTimeout(
+                  () => reject(new Error("Vapi call did not start")),
+                  15_000,
+                ),
+              ),
+            ]);
           }
-          return phase === "executing" || phase === "interviewing" || currentStatus === "active"
-            ? "active"
-            : job.status;
-        });
-        const executionResult = job.progress?.executionResult;
-        if (job.status !== "completed" && executionResult) {
-          setResult((currentResult) =>
-            currentResult ?? {
-              ...executionResult,
-            },
-          );
         }
-        if (job.status === "completed" && job.result) {
-          setResult(job.result);
-          setIsRunning(false);
-          setJobId(null);
-        } else if (job.status === "failed") {
-          setError(job.error ?? "Code execution failed");
-          setIsRunning(false);
-          setJobId(null);
-        }
-      } catch (requestError) {
-        if (cancelled) return;
-        setError(
-          requestError instanceof Error
-            ? requestError.message
-            : "Unable to read execution status",
-        );
-        setIsRunning(false);
-        setJobId(null);
-      } finally {
-        requestInFlight = false;
+        vapiRef.current?.say(feedback.response);
+      } catch (voiceStartError) {
+        callStartResolverRef.current = null;
+        setVoiceError(getVoiceErrorMessage(voiceStartError));
+        setIsVoiceActive(false);
+        setIsSpeaking(false);
       }
     };
 
-    void pollStatus();
-    const intervalId = window.setInterval(() => void pollStatus(), 250);
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [jobId]);
+    void speakFeedback();
+  }, [result, isVoiceActive, voiceError]);
+
+  const endVoiceCall = async () => {
+    if (!vapiRef.current || !voiceStartedRef.current) return;
+
+    try {
+      await vapiRef.current.stop();
+    } catch (voiceStopError) {
+      setVoiceError(getVoiceErrorMessage(voiceStopError));
+    } finally {
+      voiceStartedRef.current = false;
+      setIsVoiceActive(false);
+      setIsSpeaking(false);
+      setVoiceStatus("Voice session ended.");
+    }
+  };
 
   const handleLanguageChange = (nextLanguage: Language) => {
     setLanguage(nextLanguage);
     setCode(examples[nextLanguage]);
     setResult(null);
     setError("");
+    setVoiceError("");
+    spokenFeedbackRef.current = null;
   };
 
   const runCode = async () => {
@@ -153,6 +303,8 @@ export default function Home() {
     setJobStatus("active");
     setError("");
     setResult(null);
+    setVoiceError("");
+    spokenFeedbackRef.current = null;
 
     try {
       const response = await fetch(`${apiUrl}/submit`, {
@@ -311,6 +463,21 @@ export default function Home() {
             rows={4}
           />
           <div className="chat-messages" aria-live="polite">
+            <div className={`assistant-avatar${isSpeaking ? " speaking" : ""}`}>
+              <div className="assistant-avatar-face" aria-hidden="true">
+                ✦
+              </div>
+              <span>{voiceStatus}</span>
+            </div>
+            {isVoiceActive && (
+              <button
+                type="button"
+                className="end-call-button"
+                onClick={() => void endVoiceCall()}
+              >
+                End call
+              </button>
+            )}
             <div className="chat-bubble interviewer">
               <span className="chat-author">AI interviewer</span>
               {result
@@ -322,6 +489,7 @@ export default function Home() {
                 Gemini feedback is currently unavailable.
               </span>
             )}
+            {voiceError && <span className="chat-note">{voiceError}</span>}
           </div>
         </aside>
       </section>

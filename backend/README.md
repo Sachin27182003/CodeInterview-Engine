@@ -15,7 +15,11 @@ npm install
 npm run build
 ```
 
-The API listens on port `3001` by default. Set `PORT` to use another port and
+The API listens on port `3001` by default and exposes Socket.IO on the same
+port. Set `PORT` to use another port and `FRONTEND_URL` to restrict the
+Socket.IO browser origin. Execution progress and interview feedback are pushed
+to subscribed clients as `job:progress`, `job:completed`, and `job:failed`
+events; the legacy `/status/:jobId` endpoint remains available for diagnostics.
 `CODE_EXECUTION_IMAGE` to use a different runner image tag. Set `REDIS_URL` to
 use a different Redis instance; it defaults to `redis://127.0.0.1:6379`. Set
 `GEMINI_API_KEY` to enable the AI interviewer after each execution.

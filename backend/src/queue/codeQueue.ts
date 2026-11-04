@@ -3,7 +3,7 @@ import { Redis } from "ioredis";
 import type { ExecutionRequest } from "../execution/types.js";
 
 export const CODE_QUEUE_NAME = "code-execution";
-const redisUrl = process.env["REDIS_URL"] ?? "redis://127.0.0.1:6379";
+export const redisUrl = process.env["REDIS_URL"] ?? "redis://127.0.0.1:6379";
 
 export const redisConnection = new Redis(redisUrl, {
   maxRetriesPerRequest: null,
