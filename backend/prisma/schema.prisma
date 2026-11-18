@@ -13,12 +13,24 @@ datasource db {
 }
 
 model User {
-  id        String            @id @default(uuid())
-  email     String?           @unique
-  name      String?
-  createdAt DateTime          @default(now())
-  updatedAt DateTime          @updatedAt
-  sessions  InterviewSession[]
+  id            String            @id @default(uuid())
+  email         String?           @unique
+  passwordHash  String?           @db.Text
+  name          String?
+  avatarUrl     String?           @db.Text
+  dateOfBirth   DateTime?
+  phone         String?
+  role          UserRole          @default(CANDIDATE)
+  targetRole    String?
+  customRole    String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  sessions      InterviewSession[]
+}
+
+enum UserRole {
+  CANDIDATE
+  RECRUITER
 }
 
 model Problem {
@@ -27,6 +39,8 @@ model Problem {
   title       String
   description String
   testCases   Json
+  boilerplateCode Json
+  isExecutable Boolean          @default(true)
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
   sessions    InterviewSession[]
@@ -62,14 +76,30 @@ model Submission {
   timedOut          Boolean          @default(false)
   aiFeedback        String?
   aiFeedbackAvailable Boolean?
+  aiScore            Int?
   createdAt         DateTime         @default(now())
   completedAt       DateTime?
+  report            InterviewReport?
   session           InterviewSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   problem           Problem          @relation(fields: [problemId], references: [id], onDelete: Restrict)
 
   @@index([sessionId, createdAt])
   @@index([problemId, createdAt])
   @@index([status])
+}
+
+model InterviewReport {
+  id              String     @id @default(uuid())
+  submissionId    String     @unique
+  shareToken      String     @unique @default(uuid())
+  timeComplexity  String
+  spaceComplexity String
+  transcript      Json       @default("[]")
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  submission      Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
 }
 
 enum SessionStatus {

@@ -5,6 +5,7 @@ const IMAGE = process.env["CODE_EXECUTION_IMAGE"] ?? "codeoracle-runner:latest";
 const TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_MEMORY = "128m";
+const MAX_PIDS = "64";
 
 const commandForLanguage: Record<SupportedLanguage, string[]> = {
   javascript: ["/usr/local/bin/run-code", "javascript"],
@@ -22,7 +23,11 @@ function appendOutput(current: string, chunk: Buffer): string {
   return current + text;
 }
 
-export function runInDocker(code: string, language: SupportedLanguage): Promise<ExecutionOutput> {
+export function runInDocker(
+  code: string,
+  language: SupportedLanguage,
+  problemSlug: string,
+): Promise<ExecutionOutput> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       "docker",
@@ -36,17 +41,22 @@ export function runInDocker(code: string, language: SupportedLanguage): Promise<
         "--memory-swap",
         MAX_MEMORY,
         "--cpus=0.5",
-        "--pids-limit=64",
+        `--pids-limit=${MAX_PIDS}`,
+        "--ulimit",
+        "nproc=64:64",
+        "--ulimit",
+        "nofile=256:256",
+        "--ipc=private",
         "--read-only",
         "--cap-drop=ALL",
-        "--security-opt=no-new-privileges",
+        "--security-opt=no-new-privileges:true",
         "--tmpfs",
         "/tmp:rw,nosuid,size=16m",
         "--tmpfs",
         "/run/code:rw,exec,nosuid,size=16m",
         IMAGE,
         ...commandForLanguage[language],
-        "two-sum",
+        problemSlug,
       ],
       { stdio: ["pipe", "pipe", "pipe"] },
     );
@@ -77,7 +87,12 @@ export function runInDocker(code: string, language: SupportedLanguage): Promise<
       clearTimeout(timer);
       if (!settled) {
         settled = true;
-        reject(error);
+        resolve({
+          stdout,
+          stderr: error instanceof Error ? error.message : "Docker execution failed",
+          timedOut: false,
+          exitCode: null,
+        });
       }
     });
     child.on("close", (exitCode) => {

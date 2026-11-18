@@ -1,0 +1,2 @@
+ALTER TABLE "User" ADD COLUMN "targetRole" TEXT;
+ALTER TABLE "User" ADD COLUMN "customRole" TEXT;

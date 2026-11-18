@@ -1,0 +1,3 @@
+ALTER TABLE "Problem"
+ADD COLUMN "boilerplateCode" JSONB NOT NULL DEFAULT '{}',
+ADD COLUMN "isExecutable" BOOLEAN NOT NULL DEFAULT true;

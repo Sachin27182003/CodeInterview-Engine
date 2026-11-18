@@ -28,6 +28,9 @@ use a different Redis instance; it defaults to `redis://127.0.0.1:6379`. Set
 and `GEMINI_SECONDARY_FALLBACK_MODEL` defaults to `gemini-3.6-flash`; fallback
 models are tried when a provider error is transient. Each model is retried up
 to four times with 2, 4, and 8 second backoff delays.
+Set `RECRUITER_DASHBOARD_KEY` to a private shared key for the recruiter
+assessment endpoint. The frontend server sends this key after authenticating
+an allowlisted Google account.
 
 Set `DATABASE_URL` to a PostgreSQL connection string, then generate the client
 and apply the checked-in migration:
@@ -39,8 +42,19 @@ npm run prisma:migrate
 
 The database stores users, problems and their JSON test cases, interview
 sessions, and every submission including execution output, timing, status, and
-AI feedback. Authentication is not enabled yet, so submissions create
-anonymous interview sessions until a user identity is available.
+AI feedback. Completed submissions also create an interview report with
+complexity analysis, a transcript, and a unique share token. Public reports are
+available at `GET /reports/share/:shareToken`; PDFs are available at
+`GET /reports/share/:shareToken/pdf`. Authenticated report PDFs use
+`GET /reports/:submissionId/pdf` with either the candidate `x-user-id` header
+or the recruiter dashboard key.
+
+Execution runs in a network-disabled, read-only container with dropped Linux
+capabilities, no-new-privileges, 128 MiB memory, 0.5 CPU, 64 processes, and
+bounded process/file-descriptor limits. The API applies a global request limit,
+a 10 requests/15 minutes submission limit per IP, and a 30 requests/15 minutes
+interview-response limit. Submission, interview, and transcript bodies are
+validated with Zod before database or queue access.
 
 Start the API and worker together:
 
