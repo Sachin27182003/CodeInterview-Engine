@@ -16,6 +16,7 @@ import { prisma } from "./db.js";
 import { CODE_QUEUE_NAME, codeQueue, redisConnection, redisUrl } from "./queue/codeQueue.js";
 import {
   appendTranscript,
+  calculateOverallInterviewScore,
   getTranscriptBySubmissionId,
   getReportByShareToken,
   getReportBySubmissionId,
@@ -418,6 +419,7 @@ const interviewResponseSchema = z.object({
   language: z.enum(["javascript", "python", "java", "c", "cpp"]),
   problemDescription: z.string().max(MAX_CODE_LENGTH).optional(),
   userMessage: z.string().trim().min(1).max(10_000),
+  previousQuestion: z.string().max(10_000).optional(),
   deflectionCount: z.number().int().min(0).max(2).optional(),
   followUpNumber: z.number().int().min(1).max(10).optional(),
   followUpTarget: z.number().int().min(5).max(10).optional(),
@@ -649,7 +651,7 @@ app.post("/interview/respond", interviewRateLimit, async (request, response): Pr
     response.status(400).json({ error: "Invalid interview response payload", details: parsed.error.flatten() });
     return;
   }
-  const { code, language, problemDescription, userMessage, difficulty } = parsed.data;
+  const { code, language, problemDescription, userMessage, previousQuestion, difficulty } = parsed.data;
   try {
     const reply = await generateFollowUpResponse(
       {
@@ -660,6 +662,7 @@ app.post("/interview/respond", interviewRateLimit, async (request, response): Pr
         ...(typeof problemDescription === "string" ? { problemDescription } : {}),
       },
       userMessage,
+      previousQuestion,
       parsed.data.deflectionCount ?? 0,
       parsed.data.followUpNumber ?? 1,
       parsed.data.followUpTarget ?? 7,
@@ -1143,9 +1146,23 @@ app.post("/reports/:submissionId/communication-assessment", async (request, resp
       await getTranscriptBySubmissionId(submissionId),
     );
     await saveCommunicationAssessment(submissionId, assessment);
-    response.json({ assessment });
+    const overallScore = calculateOverallInterviewScore(
+      report.submission.technicalScore ?? report.submission.aiScore,
+      assessment,
+    );
+    await prisma.submission.update({
+      where: { id: submissionId },
+      data: { aiScore: overallScore },
+    });
+    response.json({ assessment, overallScore });
   } catch (error) {
     console.error(`Could not assess communication for submission ${submissionId}:`, error);
+    await prisma.submission.update({
+      where: { id: submissionId },
+      data: { aiScore: null },
+    }).catch((scoreError: unknown) => {
+      console.error(`Could not clear incomplete overall score for ${submissionId}:`, scoreError);
+    });
     response.status(503).json({ error: "Communication assessment is unavailable" });
   }
 });

@@ -62,8 +62,7 @@ export default function LandingPage() {
     <main className="landing-page">
       <nav className="landing-nav">
         <Link className="brand-mark" href="/">
-          <span className="brand-symbol">C</span>
-          CODEORACLE
+          <img className="brand-logo" src="/codeOracle_logo.png" alt="CodeOracle" />
         </Link>
         <div className="landing-nav-links">
           <a href="#features">Platform</a>
@@ -202,8 +201,7 @@ export default function LandingPage() {
 
       <footer className="landing-footer">
         <Link className="brand-mark" href="/">
-          <span className="brand-symbol">C</span>
-          CODEORACLE
+          <img className="brand-logo" src="/codeOracle_logo.png" alt="CodeOracle" />
         </Link>
         <span>Practice with intent. Interview with confidence.</span>
       </footer>

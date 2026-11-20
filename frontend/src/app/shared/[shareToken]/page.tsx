@@ -21,6 +21,7 @@ type SharedReport = {
   transcript: Array<{ role: "user" | "assistant"; text: string; timestamp: string }>;
   communicationAssessment: {
     status: "assessed" | "limited" | "not_assessed" | "unavailable";
+    interviewAnswerQuality: number | null;
     communicationClarity: number | null;
     englishProficiency: number | null;
     confidence: number | null;
@@ -57,8 +58,8 @@ export default async function SharedReportPage({
     <main className="dashboard-shell shared-report-page">
       <header className="dashboard-header shared-report-header">
         <div className="shared-report-heading">
-          <Link className="dashboard-home-link" href="/">
-            ← CodeOracle
+          <Link className="shared-report-brand" href="/">
+            <img className="brand-logo" src="/codeOracle_logo.png" alt="CodeOracle" />
           </Link>
           <p className="eyebrow">SHAREABLE PROOF OF SKILL</p>
           <h1>{report.candidateName}</h1>
@@ -82,6 +83,7 @@ export default async function SharedReportPage({
       <section className="assessment-card shared-report-section">
         <div className="shared-section-heading"><div><span className="eyebrow">COMMUNICATION &amp; DELIVERY</span><h2>Interview speaking signals</h2></div>{communication?.status === "limited" && <span className="assessment-evidence-badge">Limited evidence</span>}</div>
         <div className="report-facts-grid shared-report-facts">
+          <div className="report-fact"><span>Verbal answer quality</span><strong>{hasCommunicationScores && communication.interviewAnswerQuality !== null ? `${communication.interviewAnswerQuality}/100` : "Not assessed"}</strong></div>
           <div className="report-fact"><span>Communication clarity</span><strong>{hasCommunicationScores && communication.communicationClarity !== null ? `${communication.communicationClarity}/100` : "Not assessed"}</strong></div>
           <div className="report-fact"><span>English proficiency</span><strong>{hasCommunicationScores && communication.englishProficiency !== null ? `${communication.englishProficiency}/100` : "Not assessed"}</strong></div>
           <div className="report-fact"><span>Confidence</span><strong>{hasCommunicationScores && communication.confidence !== null ? `${communication.confidence}/100` : "Not assessed"}</strong></div>
@@ -114,7 +116,7 @@ export default async function SharedReportPage({
         <div className="shared-section-heading"><div><span className="eyebrow">SOLUTION</span><h2>Submitted code</h2></div><span className="shared-language">{report.language}</span></div>
         <pre className="shared-code"><code>{report.code}</code></pre>
       </section>
-      <p className="shared-assessment-note">Assessment basis: The overall score reflects technical interview feedback. Communication and delivery measures use the recorded candidate transcript.</p>
+      <p className="shared-assessment-note">Assessment basis: The overall score combines code performance (50%), verbal answer quality (25%), and communication clarity and confidence (25%). Nervousness indicators are transcript-based coaching feedback and do not directly affect the score.</p>
       <section className="assessment-card shared-report-section shared-transcript-section">
         <div className="shared-section-heading"><div><span className="eyebrow">CONVERSATION</span><h2>Interview transcript</h2></div><span className="shared-entry-count">{report.transcript.length} {report.transcript.length === 1 ? "message" : "messages"}</span></div>
         {report.transcript.length === 0 ? (

@@ -15,17 +15,21 @@ type Assessment = {
   report?: { shareToken: string } | null;
 };
 
-async function getAssessments(): Promise<Assessment[]> {
-  const response = await fetch(
-    `${process.env.BACKEND_INTERNAL_URL ?? "http://localhost:3001"}/recruiter/assessments`,
-    {
-      cache: "no-store",
-      headers: { "x-recruiter-dashboard-key": process.env.RECRUITER_DASHBOARD_KEY ?? "" },
-    },
-  );
-  if (!response.ok) throw new Error("Unable to load recruiter assessments");
-  const payload = (await response.json()) as { assessments?: Assessment[] };
-  return payload.assessments ?? [];
+async function getAssessments(): Promise<{ assessments: Assessment[]; unavailable: boolean }> {
+  try {
+    const response = await fetch(
+      `${process.env.BACKEND_INTERNAL_URL ?? "http://localhost:3001"}/recruiter/assessments`,
+      {
+        cache: "no-store",
+        headers: { "x-recruiter-dashboard-key": process.env.RECRUITER_DASHBOARD_KEY ?? "" },
+      },
+    );
+    if (!response.ok) return { assessments: [], unavailable: true };
+    const payload = (await response.json()) as { assessments?: Assessment[] };
+    return { assessments: payload.assessments ?? [], unavailable: false };
+  } catch {
+    return { assessments: [], unavailable: true };
+  }
 }
 
 async function RecruiterDashboardContent() {
@@ -35,7 +39,7 @@ async function RecruiterDashboardContent() {
   }
   if (session.user.role !== "recruiter") redirect("/dashboard");
 
-  const assessments = await getAssessments();
+  const { assessments, unavailable: assessmentsUnavailable } = await getAssessments();
   return (
     <main className="dashboard-shell dashboard-shell-header">
       <header className="dashboard-header">
@@ -43,7 +47,7 @@ async function RecruiterDashboardContent() {
           <Link className="dashboard-home-link" href="/">
             ← Back to home
           </Link>
-          <p className="eyebrow">CODEORACLE</p>
+          <img className="brand-logo recruiter-brand-logo" src="/codeOracle_logo.png" alt="CodeOracle" />
           <h1>Recruiter assessments</h1>
         </div>
         <div className="flex items-center gap-3">
@@ -52,7 +56,11 @@ async function RecruiterDashboardContent() {
         </div>
       </header>
       <section className="assessment-list" aria-label="Candidate assessments">
-        {assessments.length === 0 ? (
+        {assessmentsUnavailable ? (
+          <p className="assessment-unavailable" role="status">
+            Recruiter assessments are temporarily unavailable. <a href="/recruiter">Refresh to try again.</a>
+          </p>
+        ) : assessments.length === 0 ? (
           <p className="dashboard-empty">No candidate assessments are available yet.</p>
         ) : (
           assessments.map((assessment) => (

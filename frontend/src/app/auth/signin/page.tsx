@@ -3,10 +3,9 @@
 import Link from "next/link";
 import { signIn } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useState } from "react";
 
 type Provider = "google" | "github";
-const AUTH_ERROR_STORAGE_KEY = "codeoracle-auth-error";
 
 function SignInOptions() {
   const searchParams = useSearchParams();
@@ -30,13 +29,7 @@ function SignInOptions() {
   const [emailValue, setEmailValue] = useState("");
   const [passwordValue, setPasswordValue] = useState("");
 
-  useEffect(() => {
-    const storedError = window.sessionStorage.getItem(AUTH_ERROR_STORAGE_KEY);
-    if (storedError) setError(storedError);
-  }, []);
-
   function clearError() {
-    window.sessionStorage.removeItem(AUTH_ERROR_STORAGE_KEY);
     setError("");
     setSuccessMessage("");
   }
@@ -103,7 +96,6 @@ function SignInOptions() {
         );
       }
       const signedInUrl = new URL(result.url ?? callbackUrl, window.location.origin);
-      window.sessionStorage.removeItem(AUTH_ERROR_STORAGE_KEY);
       window.location.assign(
         signedInUrl.origin === window.location.origin
           ? `${signedInUrl.pathname}${signedInUrl.search}${signedInUrl.hash}`
@@ -111,7 +103,6 @@ function SignInOptions() {
       );
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : "Authentication is temporarily unavailable.";
-      window.sessionStorage.setItem(AUTH_ERROR_STORAGE_KEY, message);
       setError(message);
       setPending(false);
     }
@@ -132,8 +123,7 @@ function SignInOptions() {
       <div className="auth-background-glow auth-background-glow-two" />
       <section className="auth-card" aria-labelledby="sign-in-title">
         <Link className="auth-brand" href="/">
-          <span className="brand-symbol">C</span>
-          CODEORACLE
+          <img className="brand-logo" src="/codeOracle_logo.png" alt="CodeOracle" />
         </Link>
 
         <div className="auth-card-heading">

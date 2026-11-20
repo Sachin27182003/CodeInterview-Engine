@@ -16,17 +16,21 @@ type Assessment = {
   report?: { shareToken: string } | null;
 };
 
-async function getAssessments(userId: string): Promise<Assessment[]> {
-  const response = await fetch(
-    `${process.env.BACKEND_INTERNAL_URL ?? "http://localhost:3001"}/users/${userId}/assessments`,
-    {
-      cache: "no-store",
-      headers: { "x-auth-internal-key": process.env.AUTH_INTERNAL_KEY ?? "" },
-    },
-  );
-  if (!response.ok) throw new Error("Unable to load interview history");
-  const payload = (await response.json()) as { assessments?: Assessment[] };
-  return payload.assessments ?? [];
+async function getAssessments(userId: string): Promise<{ assessments: Assessment[]; unavailable: boolean }> {
+  try {
+    const response = await fetch(
+      `${process.env.BACKEND_INTERNAL_URL ?? "http://localhost:3001"}/users/${userId}/assessments`,
+      {
+        cache: "no-store",
+        headers: { "x-auth-internal-key": process.env.AUTH_INTERNAL_KEY ?? "" },
+      },
+    );
+    if (!response.ok) return { assessments: [], unavailable: true };
+    const payload = (await response.json()) as { assessments?: Assessment[] };
+    return { assessments: payload.assessments ?? [], unavailable: false };
+  } catch {
+    return { assessments: [], unavailable: true };
+  }
 }
 
 async function getProfile(userId: string): Promise<{ targetRole: string | null; name: string | null; avatarUrl: string | null }> {
@@ -55,7 +59,7 @@ async function CandidateDashboardContent() {
   }
   if (session.user.role === "recruiter") redirect("/recruiter");
 
-  const assessments = await getAssessments(session.user.id);
+  const { assessments, unavailable: assessmentsUnavailable } = await getAssessments(session.user.id);
   const profile = await getProfile(session.user.id);
   if (!profile.targetRole && !session.user.targetRole) {
     return (
@@ -70,8 +74,7 @@ async function CandidateDashboardContent() {
       <header className="dashboard-header">
         <div className="dashboard-brand-row">
           <Link className="brand-mark dashboard-brand" href="/">
-            <span className="brand-symbol">C</span>
-            CODEORACLE
+            <img className="brand-logo" src="/codeOracle_logo.png" alt="CodeOracle" />
           </Link>
           <AccountActions name={displayName} avatarUrl={profile.avatarUrl} />
         </div>
@@ -93,7 +96,11 @@ async function CandidateDashboardContent() {
         </Link>
       </div>
       <section className="assessment-list" aria-label="Interview history">
-        {assessments.length === 0 ? (
+        {assessmentsUnavailable ? (
+          <p className="assessment-unavailable" role="status">
+            Interview history is temporarily unavailable. <a href="/dashboard">Refresh to try again.</a>
+          </p>
+        ) : assessments.length === 0 ? (
           <p className="dashboard-empty">No interviews yet. Start your first practice session.</p>
         ) : (
           assessments.map((assessment) => (

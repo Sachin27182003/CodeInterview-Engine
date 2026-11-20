@@ -7,5 +7,11 @@ if (!connectionString || connectionString.startsWith("prisma+")) {
   throw new Error("DATABASE_URL must be a PostgreSQL connection string for the Prisma runtime");
 }
 
-const adapter = new PrismaPg({ connectionString });
+const databaseUrl = new URL(connectionString);
+const sslMode = databaseUrl.searchParams.get("sslmode")?.toLowerCase();
+if (sslMode && ["prefer", "require", "verify-ca"].includes(sslMode)) {
+  databaseUrl.searchParams.set("sslmode", "verify-full");
+}
+
+const adapter = new PrismaPg({ connectionString: databaseUrl.toString() });
 export const prisma = new PrismaClient({ adapter });

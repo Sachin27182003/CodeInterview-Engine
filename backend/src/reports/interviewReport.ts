@@ -9,6 +9,24 @@ export type TranscriptEntry = {
   timestamp: string;
 };
 
+export function calculateOverallInterviewScore(
+  technicalScore: number | null,
+  assessment: CommunicationAssessment,
+): number | null {
+  const clarity = assessment.communicationClarity;
+  const confidence = assessment.confidence;
+  const answerQuality = assessment.interviewAnswerQuality;
+  if (
+    technicalScore === null ||
+    (assessment.status !== "assessed" && assessment.status !== "limited") ||
+    clarity === null ||
+    confidence === null ||
+    answerQuality === null
+  ) return null;
+  const communicationScore = (clarity + confidence) / 2;
+  return Math.round(technicalScore * 0.5 + answerQuality * 0.25 + communicationScore * 0.25);
+}
+
 function inferComplexity(code: string): { time: string; space: string } {
   const normalized = code.toLowerCase();
   const hasNestedLoop =
@@ -150,6 +168,7 @@ export async function renderReportPdf(report: NonNullable<Awaited<ReturnType<typ
   const communicationAssessment = report.communicationAssessment as CommunicationAssessment | null;
   document.moveDown().fontSize(14).text("Communication and delivery");
   if (communicationAssessment?.status === "assessed" || communicationAssessment?.status === "limited") {
+    document.fontSize(10).text(`Verbal interview answer quality: ${communicationAssessment.interviewAnswerQuality ?? "Not scored"}/100`);
     document.fontSize(10).text(`Communication clarity: ${communicationAssessment.communicationClarity ?? "Not scored"}/100`);
     document.text(`English proficiency (transcript-based): ${communicationAssessment.englishProficiency ?? "Not scored"}/100`);
     document.text(`Confidence: ${communicationAssessment.confidence ?? "Not scored"}/100`);
@@ -170,7 +189,7 @@ export async function renderReportPdf(report: NonNullable<Awaited<ReturnType<typ
   document.text(`Interviewer messages: ${asTranscript(report.transcript).filter((entry) => entry.role === "assistant").length}`);
   document.moveDown().fontSize(14).text("AI feedback");
   document.fontSize(11).text(report.submission.aiFeedback ?? "AI feedback is unavailable.");
-  document.moveDown().fontSize(9).fillColor("#555").text("Assessment basis: The overall score reflects technical interview feedback. Communication and delivery measures are based only on the recorded candidate transcript; nervousness indicators are not a clinical assessment and do not evaluate accent or pronunciation.").fillColor("#000");
+  document.moveDown().fontSize(9).fillColor("#555").text("Assessment basis: The overall score combines code performance (50%), verbal answer quality (25%), and communication clarity and confidence (25%). Nervousness indicators are transcript-based coaching feedback and do not directly affect the score. Communication measures use only recorded candidate responses; they are not a clinical assessment and do not evaluate accent or pronunciation.").fillColor("#000");
   if (report.submission.stderr) {
     document.moveDown().fontSize(14).text("Compiler or runtime errors");
     document.font("Courier").fontSize(8).text(report.submission.stderr);

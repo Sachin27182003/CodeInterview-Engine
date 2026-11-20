@@ -61,7 +61,8 @@ const worker = new Worker<ExecutionRequest>(
             timedOut: executionResult.timedOut,
             aiFeedback: interview.response,
             aiFeedbackAvailable: interview.available,
-            aiScore: interview.score,
+            aiScore: null,
+            technicalScore: interview.score,
             completedAt: new Date(),
           },
         });

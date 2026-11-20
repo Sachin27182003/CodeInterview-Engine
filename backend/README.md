@@ -32,7 +32,9 @@ Set `RECRUITER_DASHBOARD_KEY` to a private shared key for the recruiter
 assessment endpoint. The frontend server sends this key after authenticating
 an allowlisted Google account.
 
-Set `DATABASE_URL` to a PostgreSQL connection string, then generate the client
+Set `DATABASE_URL` to a PostgreSQL connection string. For Neon, use the current
+connection string from the Neon dashboard and prefer `sslmode=verify-full` for
+explicit certificate and hostname verification. Then generate the client
 and apply the checked-in migration:
 
 ```powershell

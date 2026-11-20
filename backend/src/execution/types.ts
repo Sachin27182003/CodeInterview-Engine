@@ -21,6 +21,7 @@ export interface InterviewFeedback {
 
 export interface CommunicationAssessment {
   status: "assessed" | "limited" | "not_assessed" | "unavailable";
+  interviewAnswerQuality: number | null;
   communicationClarity: number | null;
   englishProficiency: number | null;
   confidence: number | null;

@@ -77,6 +77,7 @@ model Submission {
   aiFeedback        String?
   aiFeedbackAvailable Boolean?
   aiScore            Int?
+  technicalScore     Int?
   createdAt         DateTime         @default(now())
   completedAt       DateTime?
   report            InterviewReport?

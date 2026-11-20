@@ -38,12 +38,12 @@ function trim(value: string): string {
   return value.length > MAX_CONTEXT_LENGTH ? `${value.slice(0, MAX_CONTEXT_LENGTH)}\n[truncated]` : value;
 }
 
-function limitToThreeLines(value: string): string {
+function limitToLines(value: string, maximum = 3): string {
   return value
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .slice(0, 3)
+    .slice(0, maximum)
     .join("\n");
 }
 
@@ -66,7 +66,7 @@ function parseFeedback(value: string): InterviewFeedback {
       if (parsed && typeof parsed === "object") {
         const record = parsed as Record<string, unknown>;
         const responseValue = record.response ?? record.feedback ?? record.message;
-        const response = typeof responseValue === "string" ? limitToThreeLines(responseValue) : "";
+        const response = typeof responseValue === "string" ? limitToLines(responseValue) : "";
         const rawScore = record.score;
         const numericScore = typeof rawScore === "number" || typeof rawScore === "string"
           ? Number(rawScore)
@@ -81,7 +81,7 @@ function parseFeedback(value: string): InterviewFeedback {
     }
   }
   if (unwrapped && !unwrapped.startsWith("{") && !unwrapped.startsWith("[")) {
-    const response = limitToThreeLines(unwrapped);
+    const response = limitToLines(unwrapped);
     if (response) return { available: true, response, score: null };
   }
   return { available: false, response: "AI feedback was not returned in the expected format.", score: null };
@@ -190,6 +190,7 @@ export async function generateCommunicationAssessment(
   if (candidateMessages.length === 0) {
     return {
       status: "not_assessed",
+      interviewAnswerQuality: null,
       communicationClarity: null,
       englishProficiency: null,
       confidence: null,
@@ -203,6 +204,7 @@ export async function generateCommunicationAssessment(
   if (!apiKey) {
     return {
       status: "unavailable",
+      interviewAnswerQuality: null,
       communicationClarity: null,
       englishProficiency: null,
       confidence: null,
@@ -219,13 +221,13 @@ export async function generateCommunicationAssessment(
   const client = new GoogleGenerativeAI(apiKey);
   const model = client.getGenerativeModel({
     model: MODEL_NAME,
-    systemInstruction: `You are evaluating communication in a practice technical interview. Return only valid JSON with this shape: {"communicationClarity": number, "englishProficiency": number, "confidence": number, "nervousnessIndicators": "low"|"moderate"|"high", "summary": string, "evidence": string[]}. Scores must be integers from 0 to 100. Evaluate only the candidate's recorded words. English proficiency means clarity and control of written/transcribed English; do not infer accent, pronunciation, nationality, or native-speaker status. Nervousness indicators may refer only to observable transcript patterns such as repeated hesitations, self-corrections, or uncertainty language. Do not diagnose or claim the candidate's actual emotional state. If the transcript offers little evidence, use moderate nervousness indicators and explain the uncertainty. Keep the summary concise and evidence to at most three short, transcript-grounded observations.`,
+    systemInstruction: `You are evaluating a candidate's full spoken technical interview transcript. Return only valid JSON with this shape: {"interviewAnswerQuality": number, "communicationClarity": number, "englishProficiency": number, "confidence": number, "nervousnessIndicators": "low"|"moderate"|"high", "summary": string, "evidence": string[]}. Scores must be integers from 0 to 100. Score interviewAnswerQuality for relevance, correctness, reasoning, and completeness of the candidate's verbal answers; do not score their code here. Evaluate communicationClarity and confidence using the recorded words. English proficiency means clarity and control of written/transcribed English; do not infer accent, pronunciation, nationality, or native-speaker status. Nervousness indicators may refer only to observable transcript patterns such as repeated hesitations, self-corrections, or uncertainty language. Do not diagnose or claim the candidate's actual emotional state. If the transcript offers little evidence, explain the uncertainty and use a conservative answer-quality score. Keep the summary concise and evidence to at most three short, transcript-grounded observations.`,
     generationConfig: { responseMimeType: "application/json" },
   });
   const conversation = transcript
     .map((entry) => `${entry.role === "user" ? "Candidate" : "Interviewer"}: ${trim(entry.text)}`)
     .join("\n");
-  const response = await model.generateContent(`Assess the communication in this interview transcript. The assessment is coaching feedback, not a clinical judgment.\n\n${trim(conversation)}`);
+  const response = await model.generateContent(`Assess the candidate's technical answers and communication in this interview transcript. The assessment is coaching feedback, not a clinical judgment.\n\n${trim(conversation)}`);
   const raw = response.response.text().trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   const parsed: unknown = JSON.parse(raw);
   if (!parsed || typeof parsed !== "object") throw new Error("Gemini returned an invalid communication assessment");
@@ -244,6 +246,7 @@ export async function generateCommunicationAssessment(
     : [];
   return {
     status,
+    interviewAnswerQuality: score(record.interviewAnswerQuality),
     communicationClarity: score(record.communicationClarity),
     englishProficiency: score(record.englishProficiency),
     confidence: score(record.confidence),
@@ -256,6 +259,7 @@ export async function generateCommunicationAssessment(
 export async function generateFollowUpResponse(
   request: ExecutionRequest,
   userMessage: string,
+  previousQuestion: string | undefined = undefined,
   deflectionCount = 0,
   followUpNumber = 1,
   followUpTarget = 7,
@@ -266,8 +270,9 @@ export async function generateFollowUpResponse(
   }
 
   const client = new GoogleGenerativeAI(apiKey);
+  const doesNotKnow = /\b(i\s*(?:do not|don't|dont)\s+know|no idea|not sure|unsure|i\s*(?:cannot|can't|cant)\s+answer|i\s*(?:have|hv)\s+no clue|i\s*(?:am|m)\s+not certain)\b/i.test(userMessage);
   const looksLikeDeflection =
-    /\b(what(?:'s| is) your name|who are you|how are you|tell me a joke|weather|politic|unrelated|off[- ]topic|change the subject|skip this|no idea)\b/i.test(
+    /\b(what(?:'s| is) your name|who are you|how are you|tell me a joke|weather|politic|unrelated|off[- ]topic|change the subject|skip this)\b/i.test(
       userMessage,
     ) ||
     (/\b(can we|could we|i want to)\b.*\b(change|switch|avoid)\b/i.test(userMessage));
@@ -288,7 +293,7 @@ export async function generateFollowUpResponse(
       penaltyApplied: false,
     };
   }
-  if (followUpNumber >= followUpTarget) {
+  if (followUpNumber >= followUpTarget && !doesNotKnow) {
     return {
       response: "Thank you. I have enough evidence to complete the technical assessment.",
       strike,
@@ -308,14 +313,17 @@ ${trim(request.code)}
 Candidate's spoken answer:
 ${trim(userMessage)}
 
-This is follow-up ${followUpNumber} of ${followUpTarget}. Reply in at most two short sentences. Directly acknowledge the candidate's answer, then ask one concise role-specific follow-up question. Do not provide corrected code or a full solution.`;
+Previous interviewer question:
+${trim(previousQuestion ?? "No previous question was provided.")}
+
+This is follow-up ${followUpNumber} of ${followUpTarget}. Reply in at most four concise sentences. If the candidate says they do not know, are unsure, or cannot answer, treat that as a valid answer, not a deflection: briefly and clearly explain the expected concept or answer, then immediately continue the interview without asking whether they have questions. When more questions remain, use the exact transition sentence "Let's start with the next question." and then ask exactly one new, concise role-specific technical question. If this was the final follow-up, briefly explain the answer and close the interview without asking another question. For any other answer, acknowledge it and ask exactly one relevant follow-up question. Do not offer to switch into tutoring mode, invite unrelated questions, or give corrected code or a full solution.`;
   const model = client.getGenerativeModel({
     model: MODEL_NAME,
     systemInstruction:
-      "You are an interactive technical interviewer. Keep the conversation going and always ask a relevant follow-up question.",
+      "You are a professional technical interviewer. Keep control of the interview, assess the candidate's reasoning, and move to the next question after brief clarification when needed. Do not offer open-ended tutoring or ask whether the candidate has questions.",
   });
   const response = await model.generateContent(prompt);
   const text = response.response.text();
   if (!text) throw new Error("Gemini returned an empty follow-up response");
-  return { response: limitToThreeLines(text), strike, terminated: false, penaltyApplied: false };
+  return { response: limitToLines(text, 4), strike, terminated: false, penaltyApplied: false };
 }
