@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import type { ExecutionOutput, ExecutionRequest, InterviewFeedback } from "../execution/types.js";
+import type { CommunicationAssessment, ExecutionOutput, ExecutionRequest, InterviewFeedback } from "../execution/types.js";
 
 const MODEL_NAME = process.env["GEMINI_MODEL"] ?? "gemini-3.8-flash";
 const FALLBACK_MODEL_NAME = process.env["GEMINI_FALLBACK_MODEL"] ?? "gemini-3.7-flash";
@@ -24,6 +24,14 @@ function roleGuidance(targetRole?: string): string {
   return targetRole
     ? `The candidate is targeting the ${targetRole} role. Tailor questions to this role while still testing the code.`
     : "The candidate has not selected a target role. Test general software engineering fundamentals.";
+}
+
+function difficultyGuidance(difficulty?: ExecutionRequest["difficulty"]): string {
+  switch (difficulty) {
+    case "easy": return "Interview difficulty: easy. Keep coding and follow-up questions beginner-friendly; focus on basic concepts, clear reasoning, and avoid advanced edge cases or jargon.";
+    case "hard": return "Interview difficulty: hard. Use challenging coding and follow-up questions that probe trade-offs, edge cases, complexity, and deeper system or language details.";
+    default: return "Interview difficulty: medium. Use intermediate coding and follow-up questions that test practical problem solving, complexity, and relevant trade-offs.";
+  }
 }
 
 function trim(value: string): string {
@@ -113,6 +121,7 @@ export async function generateInterviewFeedback(
   const client = new GoogleGenerativeAI(apiKey);
   const executionOutput = [result.stdout, result.stderr].filter(Boolean).join("\n") || "(no output)";
   const prompt = `${roleGuidance(request.targetRole)}
+${difficultyGuidance(request.difficulty)}
 
 Problem:
 ${trim(request.problemDescription ?? "No problem statement was provided. Focus on the code's behavior and complexity.")}
@@ -174,6 +183,76 @@ Exit code: ${result.exitCode ?? "unknown"}; timed out: ${result.timedOut}`;
   };
 }
 
+export async function generateCommunicationAssessment(
+  transcript: Array<{ role: "user" | "assistant"; text: string }>,
+): Promise<CommunicationAssessment> {
+  const candidateMessages = transcript.filter((entry) => entry.role === "user" && entry.text.trim());
+  if (candidateMessages.length === 0) {
+    return {
+      status: "not_assessed",
+      communicationClarity: null,
+      englishProficiency: null,
+      confidence: null,
+      nervousnessIndicators: "not_assessed",
+      summary: "No candidate responses were recorded, so communication and delivery could not be assessed.",
+      evidence: [],
+    };
+  }
+
+  const apiKey = process.env["GEMINI_API_KEY"];
+  if (!apiKey) {
+    return {
+      status: "unavailable",
+      communicationClarity: null,
+      englishProficiency: null,
+      confidence: null,
+      nervousnessIndicators: "not_assessed",
+      summary: "Communication assessment is unavailable because the AI service is not configured.",
+      evidence: [],
+    };
+  }
+
+  const wordCount = candidateMessages.reduce((count, entry) => count + entry.text.trim().split(/\s+/).length, 0);
+  const status: CommunicationAssessment["status"] = candidateMessages.length < 2 || wordCount < 40
+    ? "limited"
+    : "assessed";
+  const client = new GoogleGenerativeAI(apiKey);
+  const model = client.getGenerativeModel({
+    model: MODEL_NAME,
+    systemInstruction: `You are evaluating communication in a practice technical interview. Return only valid JSON with this shape: {"communicationClarity": number, "englishProficiency": number, "confidence": number, "nervousnessIndicators": "low"|"moderate"|"high", "summary": string, "evidence": string[]}. Scores must be integers from 0 to 100. Evaluate only the candidate's recorded words. English proficiency means clarity and control of written/transcribed English; do not infer accent, pronunciation, nationality, or native-speaker status. Nervousness indicators may refer only to observable transcript patterns such as repeated hesitations, self-corrections, or uncertainty language. Do not diagnose or claim the candidate's actual emotional state. If the transcript offers little evidence, use moderate nervousness indicators and explain the uncertainty. Keep the summary concise and evidence to at most three short, transcript-grounded observations.`,
+    generationConfig: { responseMimeType: "application/json" },
+  });
+  const conversation = transcript
+    .map((entry) => `${entry.role === "user" ? "Candidate" : "Interviewer"}: ${trim(entry.text)}`)
+    .join("\n");
+  const response = await model.generateContent(`Assess the communication in this interview transcript. The assessment is coaching feedback, not a clinical judgment.\n\n${trim(conversation)}`);
+  const raw = response.response.text().trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const parsed: unknown = JSON.parse(raw);
+  if (!parsed || typeof parsed !== "object") throw new Error("Gemini returned an invalid communication assessment");
+  const record = parsed as Record<string, unknown>;
+  const score = (value: unknown): number | null => {
+    const numeric = typeof value === "number" ? value : Number(value);
+    return Number.isInteger(numeric) && numeric >= 0 && numeric <= 100 ? numeric : null;
+  };
+  const level = record.nervousnessIndicators;
+  const nervousnessIndicators = level === "low" || level === "moderate" || level === "high"
+    ? level
+    : "moderate";
+  const summary = typeof record.summary === "string" ? record.summary.trim().slice(0, 600) : "Communication feedback was not returned.";
+  const evidence = Array.isArray(record.evidence)
+    ? record.evidence.filter((item): item is string => typeof item === "string").map((item) => item.trim().slice(0, 240)).filter(Boolean).slice(0, 3)
+    : [];
+  return {
+    status,
+    communicationClarity: score(record.communicationClarity),
+    englishProficiency: score(record.englishProficiency),
+    confidence: score(record.confidence),
+    nervousnessIndicators,
+    summary,
+    evidence,
+  };
+}
+
 export async function generateFollowUpResponse(
   request: ExecutionRequest,
   userMessage: string,
@@ -219,6 +298,7 @@ export async function generateFollowUpResponse(
   }
   const prompt = `You are conducting a technical interview.
 ${roleGuidance(request.targetRole)}
+${difficultyGuidance(request.difficulty)}
 Problem:
 ${trim(request.problemDescription ?? "No problem statement was provided.")}
 

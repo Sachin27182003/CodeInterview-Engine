@@ -1,4 +1,6 @@
 import PDFDocument from "pdfkit";
+import type { CommunicationAssessment } from "../execution/types.js";
+import type { Prisma } from "../generated/prisma/client.js";
 import { prisma } from "../db.js";
 
 export type TranscriptEntry = {
@@ -73,6 +75,24 @@ export async function appendTranscript(
   });
 }
 
+export async function getTranscriptBySubmissionId(submissionId: string): Promise<TranscriptEntry[]> {
+  const report = await prisma.interviewReport.findUnique({
+    where: { submissionId },
+    select: { transcript: true },
+  });
+  return asTranscript(report?.transcript);
+}
+
+export async function saveCommunicationAssessment(
+  submissionId: string,
+  assessment: CommunicationAssessment,
+): Promise<void> {
+  await prisma.interviewReport.update({
+    where: { submissionId },
+    data: { communicationAssessment: assessment as unknown as Prisma.InputJsonValue },
+  });
+}
+
 export async function getReportBySubmissionId(submissionId: string) {
   return prisma.interviewReport.findUnique({
     where: { submissionId },
@@ -127,6 +147,20 @@ export async function renderReportPdf(report: NonNullable<Awaited<ReturnType<typ
   document.text(`Execution status: ${report.submission.timedOut ? "Timed out" : report.submission.exitCode === 0 ? "Passed" : "Failed or unavailable"}`);
   document.text(`Runtime: ${report.submission.executionTimeMs === null ? "Unavailable" : `${report.submission.executionTimeMs} ms`}`);
   document.text(`Exit code: ${report.submission.exitCode ?? "Unavailable"}`);
+  const communicationAssessment = report.communicationAssessment as CommunicationAssessment | null;
+  document.moveDown().fontSize(14).text("Communication and delivery");
+  if (communicationAssessment?.status === "assessed" || communicationAssessment?.status === "limited") {
+    document.fontSize(10).text(`Communication clarity: ${communicationAssessment.communicationClarity ?? "Not scored"}/100`);
+    document.text(`English proficiency (transcript-based): ${communicationAssessment.englishProficiency ?? "Not scored"}/100`);
+    document.text(`Confidence: ${communicationAssessment.confidence ?? "Not scored"}/100`);
+    document.text(`Nervousness indicators in transcript: ${communicationAssessment.nervousnessIndicators}`);
+    document.text(communicationAssessment.summary);
+    for (const item of communicationAssessment.evidence) document.text(`• ${item}`);
+    if (communicationAssessment.status === "limited") document.text("Limited evidence: the transcript contained few or brief candidate responses.");
+    document.text("These observations are based on the transcript and are not a clinical assessment or an evaluation of accent or pronunciation.");
+  } else {
+    document.fontSize(10).text(communicationAssessment?.summary ?? "Communication measures are not available for this report.");
+  }
   const testSummary = report.submission.stdout?.match(/Passed\s+(\d+)\s*\/\s*(\d+)\s+tests?/i);
   const sourceLines = report.submission.code.split(/\r?\n/);
   document.text(`Tests passed: ${testSummary ? `${testSummary[1]} / ${testSummary[2]}` : "No test summary returned"}`);
@@ -136,7 +170,7 @@ export async function renderReportPdf(report: NonNullable<Awaited<ReturnType<typ
   document.text(`Interviewer messages: ${asTranscript(report.transcript).filter((entry) => entry.role === "assistant").length}`);
   document.moveDown().fontSize(14).text("AI feedback");
   document.fontSize(11).text(report.submission.aiFeedback ?? "AI feedback is unavailable.");
-  document.moveDown().fontSize(9).fillColor("#555").text("Assessment basis: The AI score reflects available interview feedback. Separate communication skills and nervousness ratings are not currently generated. The transcript is included for context.").fillColor("#000");
+  document.moveDown().fontSize(9).fillColor("#555").text("Assessment basis: The overall score reflects technical interview feedback. Communication and delivery measures are based only on the recorded candidate transcript; nervousness indicators are not a clinical assessment and do not evaluate accent or pronunciation.").fillColor("#000");
   if (report.submission.stderr) {
     document.moveDown().fontSize(14).text("Compiler or runtime errors");
     document.font("Courier").fontSize(8).text(report.submission.stderr);

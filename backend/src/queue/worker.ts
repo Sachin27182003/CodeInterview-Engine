@@ -27,7 +27,13 @@ const worker = new Worker<ExecutionRequest>(
             timedOut: false,
             exitCode: null,
           }
-        : await runInDocker(job.data.code, job.data.language, job.data.problemSlug ?? "two-sum");
+        : await runInDocker(
+            job.data.code,
+            job.data.language,
+            job.data.problemSlug ?? "two-sum",
+            job.data.runnerEntryPoint,
+            job.data.runnerTestCases,
+          );
       const executionTimeMs = Date.now() - startedAt;
       executionResult.executionTimeMs = executionTimeMs;
       const executionSucceeded =

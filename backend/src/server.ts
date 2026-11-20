@@ -4,19 +4,23 @@ import cors from "cors";
 import bcrypt from "bcryptjs";
 import express, { type ErrorRequestHandler, type Request, type Response } from "express";
 import rateLimit from "express-rate-limit";
+import type { Prisma } from "./generated/prisma/client.js";
 import { QueueEvents } from "bullmq";
 import { Redis } from "ioredis";
 import { Server } from "socket.io";
 import { z } from "zod";
 import type { ExecutionRequest, SupportedLanguage } from "./execution/types.js";
-import { generateFollowUpResponse } from "./interview/geminiInterviewer.js";
+import { generateCommunicationAssessment, generateFollowUpResponse } from "./interview/geminiInterviewer.js";
+import { easyRoleProblems } from "./interview/easyRoleQuestionCatalog.js";
 import { prisma } from "./db.js";
 import { CODE_QUEUE_NAME, codeQueue, redisConnection, redisUrl } from "./queue/codeQueue.js";
 import {
   appendTranscript,
+  getTranscriptBySubmissionId,
   getReportByShareToken,
   getReportBySubmissionId,
   renderReportPdf,
+  saveCommunicationAssessment,
   type TranscriptEntry,
 } from "./reports/interviewReport.js";
 
@@ -28,19 +32,25 @@ const io = new Server(httpServer, {
 
 type ProblemDefinition = {
   slug: string;
+  difficulty: "easy" | "medium" | "hard";
   roles: string[];
   title: string;
   description: string;
   testCases: JsonValue[];
   boilerplateCode?: JsonValue;
   isExecutable?: boolean;
+  runnerEntryPoint?: string;
+  runnerTestCases?: { args: JsonValue[]; expected: JsonValue }[];
+  exampleInputNames?: string[];
+  exampleScenario?: string;
 };
 
-type JsonValue = string | number | boolean | JsonValue[] | { [key: string]: JsonValue };
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 const problemCatalog: ProblemDefinition[] = [
   {
     slug: "frontend-state-updates",
+    difficulty: "easy",
     roles: ["Frontend Developer", "Web Developer", "Full-Stack Developer"],
     title: "Batch state updates",
     description:
@@ -52,6 +62,7 @@ const problemCatalog: ProblemDefinition[] = [
   },
   {
     slug: "frontend-render-window",
+    difficulty: "medium",
     roles: ["Frontend Developer", "Web Developer", "Full-Stack Developer"],
     title: "Visible render window",
     description:
@@ -63,6 +74,7 @@ const problemCatalog: ProblemDefinition[] = [
   },
   {
     slug: "backend-concurrency-window",
+    difficulty: "medium",
     roles: ["Backend Developer", "DevOps/SRE", "Cloud Architect"],
     title: "Concurrency window",
     description:
@@ -76,6 +88,7 @@ const problemCatalog: ProblemDefinition[] = [
   },
   {
     slug: "backend-rate-limiter",
+    difficulty: "medium",
     roles: ["Backend Developer", "DevOps/SRE", "Cloud Architect"],
     title: "Sliding-window rate limiter",
     description:
@@ -89,6 +102,7 @@ const problemCatalog: ProblemDefinition[] = [
   },
   {
     slug: "indexed-log-search",
+    difficulty: "medium",
     roles: ["Software Engineer", "General Software Engineering", "Data Scientist"],
     title: "Indexed event lookup",
     description:
@@ -103,6 +117,7 @@ const problemCatalog: ProblemDefinition[] = [
   },
   {
     slug: "retry-budget",
+    difficulty: "easy",
     roles: ["Security Engineer", "QA/SDET", "Machine Learning/AI Engineer"],
     title: "Retry budget",
     description:
@@ -117,6 +132,7 @@ const problemCatalog: ProblemDefinition[] = [
   },
   {
     slug: "data-deduplicate-events",
+    difficulty: "easy",
     roles: ["Data Scientist", "Backend Developer", "QA/SDET"],
     title: "Deduplicate event records",
     description:
@@ -129,7 +145,85 @@ const problemCatalog: ProblemDefinition[] = [
     ],
   },
   {
+    slug: "find-maximum-number",
+    difficulty: "easy",
+    roles: ["Software Engineer", "General Software Engineering", "Frontend Developer", "Web Developer", "Backend Developer", "Full-Stack Developer", "QA/SDET", "Data Scientist"],
+    title: "Find the largest number",
+    description: "Given a non-empty array of numbers, return the largest value. The array may contain negative numbers and duplicates. Do not use a built-in max function.",
+    testCases: [
+      { numbers: [3, 1, 8, 2], expected: 8 },
+      { numbers: [-5, -2, -9], expected: -2 },
+      { numbers: [4, 4, 4], expected: 4 },
+    ],
+  },
+  {
+    slug: "count-vowels",
+    difficulty: "easy",
+    roles: ["Software Engineer", "General Software Engineering", "Frontend Developer", "Web Developer", "Backend Developer", "Full-Stack Developer", "QA/SDET", "Data Scientist"],
+    title: "Count vowels in a string",
+    description: "Given a string, return the number of English vowels (a, e, i, o, u) it contains. Count uppercase vowels too; treat all other characters as non-vowels.",
+    testCases: [
+      { text: "Interview", expected: 4 },
+      { text: "rhythm", expected: 0 },
+      { text: "AEIOU", expected: 5 },
+    ],
+  },
+  {
+    slug: "valid-parentheses",
+    difficulty: "medium",
+    roles: ["Software Engineer", "General Software Engineering", "Frontend Developer", "Web Developer", "Backend Developer", "Full-Stack Developer", "QA/SDET"],
+    title: "Validate bracket pairs",
+    description: "Given a string containing only (, ), [, ], {, and }, return whether every opening bracket is closed by the correct type in the correct order.",
+    testCases: [
+      { text: "()[]{}", expected: true },
+      { text: "([{}])", expected: true },
+      { text: "(]", expected: false },
+      { text: "([)]", expected: false },
+      { text: "(()", expected: false },
+    ],
+  },
+  {
+    slug: "merge-overlapping-intervals",
+    difficulty: "medium",
+    roles: ["Software Engineer", "General Software Engineering", "Backend Developer", "Full-Stack Developer", "Data Scientist", "Cloud Architect"],
+    title: "Merge overlapping intervals",
+    description: "Given a list of [start, end] intervals in any order, merge all overlapping intervals and return the merged intervals sorted by start time. Intervals that touch at an endpoint overlap.",
+    testCases: [
+      { intervals: [[1, 3], [2, 6], [8, 10], [15, 18]], expected: [[1, 6], [8, 10], [15, 18]] },
+      { intervals: [[1, 4], [4, 5]], expected: [[1, 5]] },
+      { intervals: [], expected: [] },
+      { intervals: [[5, 7], [1, 2]], expected: [[1, 2], [5, 7]] },
+    ],
+  },
+  {
+    slug: "longest-increasing-subsequence",
+    difficulty: "hard",
+    roles: ["Software Engineer", "General Software Engineering", "Backend Developer", "Full-Stack Developer", "Data Scientist", "Machine Learning/AI Engineer"],
+    title: "Longest increasing subsequence",
+    description: "Given an integer array, return the length of its longest strictly increasing subsequence. Target O(n log n) time; the subsequence does not need to be contiguous.",
+    testCases: [
+      { numbers: [10, 9, 2, 5, 3, 7, 101, 18], expected: 4 },
+      { numbers: [0, 1, 0, 3, 2, 3], expected: 4 },
+      { numbers: [7, 7, 7, 7], expected: 1 },
+      { numbers: [], expected: 0 },
+    ],
+  },
+  {
+    slug: "minimum-window-substring",
+    difficulty: "hard",
+    roles: ["Software Engineer", "General Software Engineering", "Backend Developer", "Full-Stack Developer", "Data Scientist", "Machine Learning/AI Engineer"],
+    title: "Minimum covering substring",
+    description: "Given strings s and t, return the shortest substring of s containing every character in t with the required multiplicity. Return an empty string if no such substring exists. Target O(|s| + |t|) time.",
+    testCases: [
+      { source: "ADOBECODEBANC", target: "ABC", expected: "BANC" },
+      { source: "a", target: "a", expected: "a" },
+      { source: "a", target: "aa", expected: "" },
+      { source: "aa", target: "aa", expected: "aa" },
+    ],
+  },
+  {
     slug: "security-audit-log",
+    difficulty: "easy",
     roles: ["Security Engineer", "Backend Developer", "QA/SDET"],
     title: "Find unauthorized audit events",
     description:
@@ -143,13 +237,17 @@ const problemCatalog: ProblemDefinition[] = [
   },
   {
     slug: "frontend-component-architecture",
+    difficulty: "hard",
     roles: ["Frontend Developer", "Web Developer", "Full-Stack Developer", "Cloud Architect"],
     title: "Design a resilient dashboard component",
     description:
-      "Describe the React component structure, state boundaries, loading and error states, and rendering strategy for a dashboard that displays live metrics without unnecessary re-renders. This is a static design review.",
+      "Design a React dashboard that displays live metrics and updates as new data arrives. Explain your design under each heading:\n\n1. Component structure: name the page, data hook or service, metrics grid, reusable metric card, and any status or error components. Describe what each one renders and how data flows between them.\n\n2. State boundaries: say where metrics data, connection status, loading/error state, filters, and card-only UI state live. Explain how you keep unrelated state changes from refreshing the entire dashboard.\n\n3. Data lifecycle: describe the initial fetch, live update subscription (WebSocket, server-sent events, or polling), cleanup on unmount, reconnection behavior, and how you prevent stale or out-of-order updates from overwriting newer values.\n\n4. Loading, empty, and error states: explain the first-load skeleton, no-metrics state, request failure and retry action, live connection loss, and how you preserve or label the last known values when updates stop.\n\n5. Rendering performance: explain how you update only changed metrics, keep props and callbacks stable where useful, split or memoize components based on profiling, and avoid unnecessary context-wide updates. Mention how you would measure whether the optimizations help.\n\n6. Accessibility: describe how live changes are announced without overwhelming screen-reader users, and how loading, errors, and metric trends are communicated without relying only on color.\n\nGive a few sentences or concise bullet points for every heading. State important trade-offs and how you would handle a slow or unavailable metrics service. The interviewer will assess clarity, state ownership, resilience, accessibility, and performance reasoning.",
+    exampleScenario:
+      "A dashboard displays CPU usage, memory use, request rate, and error rate. Each metric updates every five seconds. If the live connection drops, the last known values remain visible with a stale-data indicator while the dashboard attempts to reconnect.",
     testCases: [],
     isExecutable: false,
   },
+  ...easyRoleProblems,
 ];
 
 const boilerplates: Record<string, JsonValue> = {
@@ -181,12 +279,36 @@ const boilerplates: Record<string, JsonValue> = {
     javascript: "function deduplicateEvents(events) {\n  // Keep the first event for each id without mutating events.\n}",
     python: "def deduplicate_events(events):\n    # Keep the first event for each id without mutating events.\n    pass",
   },
+  "find-maximum-number": {
+    javascript: "function findMaximum(numbers) {\n  // Return the largest number without using Math.max.\n}",
+    python: "def find_maximum(numbers):\n    # Return the largest number without using max().\n    pass",
+  },
+  "count-vowels": {
+    javascript: "function countVowels(text) {\n  // Count lowercase and uppercase English vowels.\n}",
+    python: "def count_vowels(text):\n    # Count lowercase and uppercase English vowels.\n    pass",
+  },
+  "valid-parentheses": {
+    javascript: "function isValidBrackets(text) {\n  // Return whether all bracket pairs are correctly nested.\n}",
+    python: "def is_valid_brackets(text):\n    # Return whether all bracket pairs are correctly nested.\n    pass",
+  },
+  "merge-overlapping-intervals": {
+    javascript: "function mergeIntervals(intervals) {\n  // Return sorted, merged intervals without mutating the input.\n}",
+    python: "def merge_intervals(intervals):\n    # Return sorted, merged intervals without mutating the input.\n    pass",
+  },
+  "longest-increasing-subsequence": {
+    javascript: "function longestIncreasingSubsequence(numbers) {\n  // Return the LIS length in O(n log n) time.\n}",
+    python: "def longest_increasing_subsequence(numbers):\n    # Return the LIS length in O(n log n) time.\n    pass",
+  },
+  "minimum-window-substring": {
+    javascript: "function minimumWindow(source, target) {\n  // Return the shortest substring covering target's characters.\n}",
+    python: "def minimum_window(source, target):\n    # Return the shortest substring covering target's characters.\n    pass",
+  },
   "security-audit-log": {
     javascript: "function unauthorizedIndexes(events, allowedActors) {\n  // Return indexes for events from actors outside the allowlist.\n}",
     python: "def unauthorized_indexes(events, allowed_actors):\n    # Return indexes for events from actors outside the allowlist.\n    pass",
   },
   "frontend-component-architecture": {
-    javascript: "// Pseudocode or React component structure is expected.\n// Explain component boundaries, state ownership, and render optimization.",
+    javascript: "// STATIC DESIGN REVIEW — Do not write executable code. Answer in JavaScript comments.\n//\n// 1. Component structure and data flow:\n//\n// 2. State ownership and boundaries:\n//\n// 3. Initial fetch, live updates, cleanup, and reconnection:\n//\n// 4. Loading, empty, error, and stale-data states:\n//\n// 5. Rendering performance and how you would measure it:\n//\n// 6. Accessibility for live metric updates:\n//\n// 7. Important trade-offs and failure handling:\n// Write a few clear sentences or bullets under every heading.",
   },
 };
 
@@ -205,22 +327,56 @@ function enrichProblem(problem: ProblemDefinition): {
   };
 }
 
+function formatProblemDescription(problem: ProblemDefinition): string {
+  if (problem.exampleScenario) {
+    return `${problem.description}\n\nExample scenario:\n${problem.exampleScenario}`;
+  }
+
+  const examples = problem.testCases.slice(0, 2).flatMap((testCase, index) => {
+    if (!testCase || typeof testCase !== "object" || Array.isArray(testCase)) return [];
+    const record = testCase as Record<string, JsonValue>;
+    const expected = record.expected;
+    if (expected === undefined) return [];
+
+    let input: string;
+    if (Array.isArray(record.args)) {
+      const args = record.args;
+      input = args.map((value, argIndex) => {
+        const name = problem.exampleInputNames?.[argIndex];
+        return `${name ?? `argument ${argIndex + 1}`} = ${JSON.stringify(value)}`;
+      }).join(", ");
+    } else {
+      input = Object.entries(record)
+        .filter(([key]) => key !== "expected")
+        .map(([key, value]) => `${key} = ${JSON.stringify(value)}`)
+        .join(", ");
+    }
+
+    return [`Example ${index + 1}:\nInput: ${input}\nOutput: ${JSON.stringify(expected)}`];
+  });
+
+  return examples.length > 0
+    ? `${problem.description}\n\nExamples:\n\n${examples.join("\n\n")}`
+    : problem.description;
+}
+
 function roleMatches(problem: ProblemDefinition, targetRole?: string | null): boolean {
   if (!targetRole) return problem.roles.includes("General Software Engineering");
   return problem.roles.some((role) => targetRole.includes(role) || role.includes(targetRole));
 }
 
-async function selectProblemForUser(userId: string, targetRole?: string | null): Promise<ProblemDefinition> {
+async function selectProblemForUser(userId: string, targetRole: string | null | undefined, difficulty: ProblemDefinition["difficulty"]): Promise<ProblemDefinition> {
   const used = await prisma.interviewSession.findMany({
     where: { userId },
     select: { problem: { select: { slug: true } } },
   });
   const usedSlugs = new Set(used.map((session) => session.problem.slug));
-  const roleProblems = problemCatalog.filter((problem) => roleMatches(problem, targetRole));
-  const candidates = (roleProblems.length > 0 ? roleProblems : problemCatalog).filter(
+  const difficultyProblems = problemCatalog.filter((problem) => problem.difficulty === difficulty);
+  const roleProblems = difficultyProblems.filter((problem) => roleMatches(problem, targetRole));
+  const candidates = (roleProblems.length > 0 ? roleProblems : difficultyProblems).filter(
     (problem) => !usedSlugs.has(problem.slug),
   );
-  const pool = candidates.length > 0 ? candidates : roleProblems.length > 0 ? roleProblems : problemCatalog;
+  const pool = candidates.length > 0 ? candidates : roleProblems.length > 0 ? roleProblems : difficultyProblems;
   return pool[Math.floor(Math.random() * pool.length)] ?? problemCatalog[0]!;
 }
 const queueEvents = new QueueEvents(CODE_QUEUE_NAME, {
@@ -243,6 +399,7 @@ const submitPayloadSchema = z.object({
   language: z.enum(["javascript", "python", "java", "c", "cpp"]),
   problemDescription: z.string().max(MAX_CODE_LENGTH).optional(),
   problemSlug: z.string().max(120).optional(),
+  difficulty: z.enum(["easy", "medium", "hard"]).optional(),
   userId: z.string().min(1).optional(),
 }).strict();
 const credentialSignupSchema = z.object({
@@ -265,6 +422,7 @@ const interviewResponseSchema = z.object({
   followUpNumber: z.number().int().min(1).max(10).optional(),
   followUpTarget: z.number().int().min(5).max(10).optional(),
   targetRole: z.string().max(120).optional(),
+  difficulty: z.enum(["easy", "medium", "hard"]).optional(),
 }).strict();
 const transcriptSchema = z.object({
   userId: z.string().min(1),
@@ -432,6 +590,11 @@ app.get("/interview/problem", async (request, response): Promise<void> => {
     response.status(400).json({ error: "userId is required" });
     return;
   }
+  const difficulty = request.query.difficulty;
+  if (difficulty !== "easy" && difficulty !== "medium" && difficulty !== "hard") {
+    response.status(400).json({ error: "Choose an interview difficulty" });
+    return;
+  }
   try {
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -440,23 +603,23 @@ app.get("/interview/problem", async (request, response): Promise<void> => {
     const targetRole = user?.targetRole === "Others" && user.customRole
       ? `Others (${user.customRole})`
       : user?.targetRole;
-    const definition = await selectProblemForUser(userId, targetRole);
+    const definition = await selectProblemForUser(userId, targetRole, difficulty);
     const metadata = enrichProblem(definition);
     const problem = await prisma.problem.upsert({
       where: { slug: definition.slug },
       update: {
         title: definition.title,
-        description: definition.description,
-        testCases: definition.testCases,
-        boilerplateCode: metadata.boilerplateCode,
+        description: formatProblemDescription(definition),
+        testCases: definition.testCases as Prisma.InputJsonValue,
+        boilerplateCode: metadata.boilerplateCode as Prisma.InputJsonValue,
         isExecutable: metadata.isExecutable,
       },
       create: {
         slug: definition.slug,
         title: definition.title,
-        description: definition.description,
-        testCases: definition.testCases,
-        boilerplateCode: metadata.boilerplateCode,
+        description: formatProblemDescription(definition),
+        testCases: definition.testCases as Prisma.InputJsonValue,
+        boilerplateCode: metadata.boilerplateCode as Prisma.InputJsonValue,
         isExecutable: metadata.isExecutable,
       },
     });
@@ -486,13 +649,14 @@ app.post("/interview/respond", interviewRateLimit, async (request, response): Pr
     response.status(400).json({ error: "Invalid interview response payload", details: parsed.error.flatten() });
     return;
   }
-  const { code, language, problemDescription, userMessage } = parsed.data;
+  const { code, language, problemDescription, userMessage, difficulty } = parsed.data;
   try {
     const reply = await generateFollowUpResponse(
       {
         code,
         language: language as SupportedLanguage,
         ...(parsed.data.targetRole ? { targetRole: parsed.data.targetRole } : {}),
+        ...(difficulty ? { difficulty } : {}),
         ...(typeof problemDescription === "string" ? { problemDescription } : {}),
       },
       userMessage,
@@ -894,6 +1058,7 @@ app.get("/reports/share/:shareToken", async (request, response): Promise<void> =
         executionStatus: report.submission.status,
         timeComplexity: report.timeComplexity,
         spaceComplexity: report.spaceComplexity,
+        communicationAssessment: report.communicationAssessment,
         code: report.submission.code,
         transcript: report.transcript,
         createdAt: report.createdAt,
@@ -957,13 +1122,41 @@ app.post("/reports/:submissionId/transcript", async (request, response): Promise
   }
 });
 
+app.post("/reports/:submissionId/communication-assessment", async (request, response): Promise<void> => {
+  if (!authInternalKey || request.header("x-auth-internal-key") !== authInternalKey) {
+    response.status(403).json({ error: "Communication assessment is not configured" });
+    return;
+  }
+  const submissionId = request.params["submissionId"];
+  const userId = request.header("x-user-id");
+  if (!submissionId || !userId) {
+    response.status(400).json({ error: "submissionId and userId are required" });
+    return;
+  }
+  try {
+    const report = await getReportBySubmissionId(submissionId);
+    if (!report || report.submission.session.userId !== userId) {
+      response.status(404).json({ error: "Report not found" });
+      return;
+    }
+    const assessment = await generateCommunicationAssessment(
+      await getTranscriptBySubmissionId(submissionId),
+    );
+    await saveCommunicationAssessment(submissionId, assessment);
+    response.json({ assessment });
+  } catch (error) {
+    console.error(`Could not assess communication for submission ${submissionId}:`, error);
+    response.status(503).json({ error: "Communication assessment is unavailable" });
+  }
+});
+
 app.post("/submit", submissionRateLimit, async (request: Request, response: Response): Promise<void> => {
   const parsed = submitPayloadSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ error: "Invalid submission payload", details: parsed.error.flatten() });
     return;
   }
-  const { code, language, problemDescription, problemSlug, userId } = parsed.data;
+  const { code, language, problemDescription, problemSlug, userId, difficulty } = parsed.data;
   if (userId !== undefined && (!authInternalKey || request.header("x-auth-internal-key") !== authInternalKey)) {
     response.status(403).json({ error: "Authenticated submissions are not configured" });
     return;
@@ -973,6 +1166,7 @@ app.post("/submit", submissionRateLimit, async (request: Request, response: Resp
     const requestData: ExecutionRequest = {
       code,
       language: language as SupportedLanguage,
+      ...(difficulty ? { difficulty } : {}),
     };
     if (typeof userId === "string") {
       const user = await prisma.user.findUnique({
@@ -1009,6 +1203,11 @@ app.post("/submit", submissionRateLimit, async (request: Request, response: Resp
     requestData.problemDescription = selectedProblem.description;
     requestData.problemSlug = selectedProblem.slug;
     requestData.isExecutable = selectedProblem.isExecutable;
+    const definition = problemCatalog.find((candidate) => candidate.slug === selectedProblem.slug);
+    if (definition?.runnerEntryPoint && definition.runnerTestCases) {
+      requestData.runnerEntryPoint = definition.runnerEntryPoint;
+      requestData.runnerTestCases = definition.runnerTestCases;
+    }
     const session = await prisma.interviewSession.create({
       data: {
         problemId: selectedProblem.id,

@@ -7,6 +7,7 @@ import { io } from "socket.io-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type Language = "javascript" | "python" | "java" | "c" | "cpp";
+type Difficulty = "easy" | "medium" | "hard";
 
 type ExecutionResult = {
   stdout: string;
@@ -48,12 +49,22 @@ type InterviewProblem = {
 };
 
 type TranscriptEntry = { role: "user" | "assistant"; text: string };
+type CommunicationAssessment = {
+  status: "assessed" | "limited" | "not_assessed" | "unavailable";
+  communicationClarity: number | null;
+  englishProficiency: number | null;
+  confidence: number | null;
+  nervousnessIndicators: "low" | "moderate" | "high" | "not_assessed";
+  summary: string;
+  evidence: string[];
+};
 
 type BrowserSpeechRecognition = {
   continuous: boolean;
   interimResults: boolean;
   lang: string;
   onend: (() => void) | null;
+  onstart: (() => void) | null;
   onerror: ((event: { error?: string }) => void) | null;
   onresult: ((event: {
     resultIndex: number;
@@ -69,32 +80,19 @@ type BrowserSpeechWindow = Window & {
 };
 
 const examples: Record<Language, string> = {
-  javascript: `function twoSum(nums, target) {
-  // Return the two indices whose values add up to target.
-}`,
-  python: `def two_sum(nums, target):
-    # Return the two indices whose values add up to target.
-    pass`,
-  java: `class Solution {
-  public int[] twoSum(int[] nums, int target) {
-    return new int[] {};
-  }
-}`,
-  c: `#include <stddef.h>
-
-void two_sum(const int *nums, int length, int target, int result[2]) {
-  // Write the two matching indices into result.
-}`,
-  cpp: `#include <vector>
-
-std::vector<int> twoSum(const std::vector<int>& nums, int target) {
-  return {};
-}`,
+  javascript: "// Your selected interview question will appear shortly.\n// A matching starter template will load here.",
+  python: "# Your selected interview question will appear shortly.\n# A matching starter template will load here.",
+  java: "// Your selected interview question will appear shortly.\n// A matching starter template will load here.",
+  c: "// Your selected interview question will appear shortly.\n// A matching starter template will load here.",
+  cpp: "// Your selected interview question will appear shortly.\n// A matching starter template will load here.",
 };
 
 const languages: Language[] = ["javascript", "python", "java", "c", "cpp"];
 
 function getProblemBoilerplate(problem: InterviewProblem, language: Language): string | undefined {
+  if (problem.slug === "frontend-component-architecture") {
+    return language === "javascript" ? designReviewStarter : undefined;
+  }
   if (typeof problem.boilerplateCode === "string") {
     return language === "javascript" ? problem.boilerplateCode : undefined;
   }
@@ -109,6 +107,42 @@ function getProblemLanguages(problem: InterviewProblem): Language[] {
 
 const apiUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
 const defaultProblem = "Loading a role-specific interview problem...";
+const designReviewPrompt = `Design a React dashboard that displays live metrics and updates as new data arrives. Address each area:
+
+1. Component structure and data flow: identify the page, data hook or service, metrics grid, reusable metric card, and status components. Explain each responsibility and how data moves between them.
+
+2. State ownership: locate metrics, connection status, loading and error state, filters, and card-level UI state. Explain how unrelated changes avoid re-rendering the whole dashboard.
+
+3. Data lifecycle: describe the initial request, live update subscription, cleanup, reconnection, and protection against stale or out-of-order updates.
+
+4. User-facing states: cover initial loading, no data, request failure and retry, connection loss, and how you retain or label the last known values.
+
+5. Rendering performance: explain how only changed metrics update, when stable props or memoization are useful, and how you would measure whether an optimization helps.
+
+6. Accessibility: explain how to communicate live changes, loading, errors, and trends without overwhelming screen-reader users or relying on color alone.
+
+7. Trade-offs and resilience: describe how the dashboard should behave when the metrics service is slow or unavailable.
+
+Provide a few concise sentences or bullets under every heading.
+
+Example scenario: A dashboard displays CPU usage, memory use, request rate, and error rate. Each metric updates every five seconds. If the live connection drops, the last known values remain visible with a stale-data indicator while the dashboard reconnects.`;
+const designReviewStarter = `// STATIC DESIGN REVIEW — Executable code is not required.
+// Respond in JavaScript comments (//) under each heading.
+//
+// 1. Component structure and data flow:
+//
+// 2. State ownership and boundaries:
+//
+// 3. Initial request, live updates, cleanup, and reconnection:
+//
+// 4. Loading, empty, error, and stale-data states:
+//
+// 5. Rendering performance and how to measure it:
+//
+// 6. Accessibility for live metric updates:
+//
+// 7. Trade-offs and resilience:
+// Add a few concise sentences or bullets under every heading.`;
 const vapiPublicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY;
 const vapiAssistantId = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
 const useVapi = process.env.NEXT_PUBLIC_USE_VAPI === "true";
@@ -139,6 +173,7 @@ function getVoiceErrorMessage(error: unknown): string {
 }
 
 export default function Home() {
+  const [difficulty, setDifficulty] = useState<Difficulty | null>(null);
   const [language, setLanguage] = useState<Language>("javascript");
   const [code, setCode] = useState(examples.javascript);
   const [result, setResult] = useState<ExecutionResult | null>(null);
@@ -150,57 +185,106 @@ export default function Home() {
   const [problem, setProblem] = useState<InterviewProblem | null>(null);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [showReport, setShowReport] = useState(false);
+  const [communicationAssessment, setCommunicationAssessment] = useState<CommunicationAssessment | null>(null);
+  const [isAssessingCommunication, setIsAssessingCommunication] = useState(false);
+  const [communicationAssessmentError, setCommunicationAssessmentError] = useState("");
   const [phase, setPhase] = useState<InterviewPhase>("CodingPhase");
   const [isVoiceActive, setIsVoiceActive] = useState(false);
   const [isVoiceStarting, setIsVoiceStarting] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [voiceStatus, setVoiceStatus] = useState("Voice assistant is ready");
+  const [voiceStatus, setVoiceStatus] = useState("Select Start interview and allow microphone access to begin.");
   const [voiceError, setVoiceError] = useState("");
+  const [micCheckStatus, setMicCheckStatus] = useState<"idle" | "checking" | "passed">("idle");
   const [textAnswer, setTextAnswer] = useState("");
+  const [isReviewingTranscript, setIsReviewingTranscript] = useState(false);
+  const [speechLanguage, setSpeechLanguage] = useState<"en-IN" | "en-US" | "en-GB">("en-IN");
+  const [nextVoicePrompt, setNextVoicePrompt] = useState("");
   const vapiRef = useRef<Vapi | null>(null);
   const voiceStartedRef = useRef(false);
   const callStartResolverRef = useRef<(() => void) | null>(null);
-  const startedFeedbackRef = useRef<string | null>(null);
   const browserRecognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const browserVoiceActiveRef = useRef(false);
-  const manualVoiceStopRef = useRef(false);
-  const browserFallbackTimerRef = useRef<number | null>(null);
-  const resultRef = useRef(result);
+  const browserSpeakRef = useRef<((text: string, saveTranscriptEntry?: boolean) => void) | null>(null);
+  const browserTranscriptBufferRef = useRef("");
+  const browserTranscriptTimerRef = useRef<number | null>(null);
   const submissionIdRef = useRef<string | null>(null);
-  const interviewContextRef = useRef({ code, language, problemDescription });
+  const communicationAssessmentRequestedRef = useRef<string | null>(null);
+  const transcriptSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const interviewContextRef = useRef({ code, language, problemDescription, difficulty: "medium" as Difficulty });
   const deflectionCountRef = useRef(0);
   const followUpCountRef = useRef(0);
   const followUpTargetRef = useRef(7);
-  resultRef.current = result;
+  const testCasesPassed = problem?.isExecutable === false || Boolean(result && result.exitCode === 0 && !result.timedOut);
 
   const saveTranscript = useCallback((role: "user" | "assistant", text: string) => {
     const submissionId = submissionIdRef.current;
     if (!submissionId || !text.trim()) return;
-    setTranscript((current) => [...current, { role, text: text.trim() }].slice(-100));
-    void fetch(`/api/reports/${submissionId}/transcript`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ role, text: text.trim(), timestamp: new Date().toISOString() }),
-    }).catch(() => undefined);
+    const entry = { role, text: text.trim() };
+    setTranscript((current) => [...current, entry].slice(-100));
+    transcriptSaveQueueRef.current = transcriptSaveQueueRef.current.then(async () => {
+      try {
+        await fetch(`/api/reports/${submissionId}/transcript`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...entry, timestamp: new Date().toISOString() }),
+        });
+      } catch {
+        // Communication feedback can still be requested from the responses held in page state.
+      }
+    });
   }, []);
 
   useEffect(() => {
-    void fetch("/api/interview/problem")
+    if (!showReport) return;
+    const submissionId = submissionIdRef.current;
+    if (!submissionId || communicationAssessmentRequestedRef.current === submissionId) return;
+    communicationAssessmentRequestedRef.current = submissionId;
+    let active = true;
+    setIsAssessingCommunication(true);
+    setCommunicationAssessmentError("");
+    void transcriptSaveQueueRef.current
+      .then(async () => {
+        const response = await fetch(`/api/reports/${submissionId}/communication-assessment`, { method: "POST" });
+        const payload = (await response.json()) as { assessment?: CommunicationAssessment; error?: string };
+        if (!response.ok || !payload.assessment) throw new Error(payload.error ?? "Could not assess interview communication");
+        if (active) setCommunicationAssessment(payload.assessment);
+      })
+      .catch((assessmentError: unknown) => {
+        if (active) setCommunicationAssessmentError(
+          assessmentError instanceof Error ? assessmentError.message : "Communication assessment is unavailable",
+        );
+      })
+      .finally(() => {
+        if (active) setIsAssessingCommunication(false);
+      });
+    return () => { active = false; };
+  }, [showReport]);
+
+  useEffect(() => {
+    if (!difficulty) return;
+    setError("");
+    setProblem(null);
+    setProblemDescription(defaultProblem);
+    void fetch(`/api/interview/problem?difficulty=${difficulty}`)
       .then(async (response) => {
         const payload = (await response.json()) as { problem?: InterviewProblem; error?: string };
         if (!response.ok || !payload.problem) throw new Error(payload.error ?? "Could not load an interview problem");
         setProblem(payload.problem);
-        setProblemDescription(payload.problem.description);
+        setProblemDescription(
+          payload.problem.slug === "frontend-component-architecture"
+            ? designReviewPrompt
+            : payload.problem.description,
+        );
         setCode(getProblemBoilerplate(payload.problem, "javascript") ?? examples.javascript);
       })
       .catch((problemError: unknown) =>
         setError(problemError instanceof Error ? problemError.message : "Could not load an interview problem"),
       );
-  }, []);
+  }, [difficulty]);
 
   useEffect(() => {
-    interviewContextRef.current = { code, language, problemDescription };
-  }, [code, language, problemDescription]);
+    interviewContextRef.current = { code, language, problemDescription, difficulty: difficulty ?? "medium" };
+  }, [code, language, problemDescription, difficulty]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -282,17 +366,7 @@ export default function Home() {
       voiceStartedRef.current = false;
       setIsVoiceActive(false);
       setIsSpeaking(false);
-      if (!manualVoiceStopRef.current && resultRef.current?.interview?.available) {
-        setVoiceStatus("Vapi ended the call. Switching to browser voice mode...");
-        browserFallbackTimerRef.current = window.setTimeout(() => {
-          browserFallbackTimerRef.current = null;
-          if (!manualVoiceStopRef.current && resultRef.current?.interview?.response) {
-            startBrowserVoiceInterview(resultRef.current.interview.response);
-          }
-        }, 500);
-      } else {
-        setVoiceStatus("Voice session ended. Run code again to restart it.");
-      }
+      setVoiceStatus("Voice session ended. Select Start interview to reconnect.");
     });
     vapi.on("speech-start", () => {
       setIsSpeaking(true);
@@ -335,39 +409,21 @@ export default function Home() {
     });
     vapi.on("error", (voiceErrorEvent) => {
       const message = getVoiceErrorMessage(voiceErrorEvent);
-      const callEnded =
-        message.toLowerCase().includes("meeting has ended") ||
-        message.toLowerCase().includes("ejection");
-      if (!callEnded) {
-        setVoiceError(message);
-      }
+      setVoiceError(message);
       voiceStartedRef.current = false;
       setIsVoiceActive(false);
       setIsSpeaking(false);
-      if (callEnded && resultRef.current?.interview?.available) {
-        setVoiceStatus("Vapi ended the call. Switching to browser voice mode...");
-        browserFallbackTimerRef.current = window.setTimeout(() => {
-          browserFallbackTimerRef.current = null;
-          if (!manualVoiceStopRef.current && resultRef.current?.interview?.response) {
-            startBrowserVoiceInterview(resultRef.current.interview.response);
-          }
-        }, 500);
-      } else {
-        setVoiceStatus(message);
-      }
+      setVoiceStatus(message);
     });
     return () => {
       if (voiceStartedRef.current) {
         void vapi.stop().catch(() => undefined);
       }
-      if (browserFallbackTimerRef.current !== null) {
-        window.clearTimeout(browserFallbackTimerRef.current);
-      }
       vapiRef.current = null;
     };
   }, [saveTranscript]);
 
-  function startBrowserVoiceInterview(openingMessage: string): void {
+  function startBrowserVoiceInterview(openingMessage: string, resume = false): void {
     if (browserVoiceActiveRef.current) return;
     const speechWindow = window as BrowserSpeechWindow;
     const Recognition =
@@ -381,16 +437,18 @@ export default function Home() {
     const recognition = new Recognition();
     recognition.continuous = true;
     recognition.interimResults = false;
-    recognition.lang = "en-US";
+    recognition.lang = speechLanguage;
     browserRecognitionRef.current = recognition;
     browserVoiceActiveRef.current = true;
-    manualVoiceStopRef.current = false;
-    followUpCountRef.current = 0;
-    followUpTargetRef.current = 5 + Math.floor(Math.random() * 6);
+    browserTranscriptBufferRef.current = "";
+    if (!resume) {
+      followUpCountRef.current = 0;
+      followUpTargetRef.current = difficulty === "easy" ? 5 : difficulty === "hard" ? 10 : 7;
+    }
     setIsVoiceActive(true);
     setVoiceError("");
 
-    const speak = (text: string) => {
+    const speak = (text: string, saveTranscriptEntry = true) => {
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.onstart = () => {
@@ -408,9 +466,10 @@ export default function Home() {
           }
         }
       };
-      saveTranscript("assistant", text);
+      if (saveTranscriptEntry) saveTranscript("assistant", text);
       window.speechSynthesis.speak(utterance);
     };
+    browserSpeakRef.current = speak;
 
     recognition.onresult = (event) => {
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
@@ -418,65 +477,44 @@ export default function Home() {
         if (!speechResult.isFinal) continue;
         const userMessage = speechResult[0]?.transcript.trim();
         if (!userMessage) continue;
-        recognition.stop();
-        saveTranscript("user", userMessage);
-        followUpCountRef.current += 1;
-        setVoiceStatus("AI interviewer is thinking...");
-        void fetch("/api/interview/respond", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...interviewContextRef.current,
-            userMessage,
-            deflectionCount: deflectionCountRef.current,
-            followUpNumber: followUpCountRef.current,
-            followUpTarget: followUpTargetRef.current,
-          }),
-        })
-          .then(async (response) => {
-            const payload = (await response.json()) as {
-              response?: string;
-              error?: string;
-              strike?: number;
-              terminated?: boolean;
-              penaltyApplied?: boolean;
-            };
-            if (!response.ok || !payload.response) {
-              throw new Error(payload.error ?? "The AI interviewer could not respond");
-            }
-            if (typeof payload.strike === "number") deflectionCountRef.current = payload.strike;
-            if (payload.penaltyApplied) {
-              setResult((current) =>
-                current?.interview
-                  ? { ...current, interview: { ...current.interview, score: Math.max(0, (current.interview.score ?? 0) - 40) } }
-                  : current,
-              );
-            }
-            speak(payload.response);
-            if (payload.terminated || followUpCountRef.current >= followUpTargetRef.current) {
-              window.setTimeout(() => {
-                browserVoiceActiveRef.current = false;
-                recognition.stop();
-                setIsVoiceActive(false);
-                setShowReport(true);
-                setPhase("InterviewPhase");
-              }, 1500);
-            }
-          })
-          .catch((responseError: unknown) => {
-            setVoiceError(
-              responseError instanceof Error
-                ? responseError.message
-                : "The AI interviewer could not respond",
-            );
-            setVoiceStatus("Listening for your response...");
-          });
+        browserTranscriptBufferRef.current = `${browserTranscriptBufferRef.current} ${userMessage}`.trim();
+        setVoiceStatus("Capturing your response… pause when you have finished speaking.");
+      }
+      if (browserTranscriptTimerRef.current !== null) window.clearTimeout(browserTranscriptTimerRef.current);
+      if (browserTranscriptBufferRef.current) {
+        browserTranscriptTimerRef.current = window.setTimeout(() => {
+          browserTranscriptTimerRef.current = null;
+          const recognizedAnswer = browserTranscriptBufferRef.current.trim();
+          browserTranscriptBufferRef.current = "";
+          if (!recognizedAnswer) return;
+          browserVoiceActiveRef.current = false;
+          recognition.stop();
+          setIsVoiceActive(false);
+          setTextAnswer(recognizedAnswer);
+          setIsReviewingTranscript(true);
+          setVoiceStatus("Review the transcript, correct any mistakes, then send your complete answer.");
+          setVoiceError("");
+        }, 1800);
       }
     };
+    recognition.onstart = () => {
+      setVoiceError("");
+      setVoiceStatus("Listening for your response...");
+    };
     recognition.onerror = (event) => {
-      if (event.error !== "no-speech" && event.error !== "aborted") {
-        setVoiceError(`Browser voice input error: ${event.error ?? "unknown error"}`);
-      }
+      if (event.error === "aborted") return;
+      if (browserTranscriptTimerRef.current !== null) window.clearTimeout(browserTranscriptTimerRef.current);
+      browserTranscriptTimerRef.current = null;
+      browserTranscriptBufferRef.current = "";
+      browserVoiceActiveRef.current = false;
+      setIsVoiceActive(false);
+      const message = event.error === "not-allowed"
+        ? "Microphone access was blocked. Allow microphone permission in your browser, then start again."
+        : event.error === "no-speech"
+          ? "No speech was detected. Check your microphone, wait for the prompt to finish, then start again."
+          : `Browser voice input error: ${event.error ?? "unknown error"}`;
+      setVoiceError(message);
+      setVoiceStatus("Voice input stopped. Start the interview again when ready.");
     };
     recognition.onend = () => {
       if (browserVoiceActiveRef.current && !window.speechSynthesis.speaking) {
@@ -493,9 +531,12 @@ export default function Home() {
 
   const startVoiceInterview = useCallback(async () => {
     const feedback = result?.interview;
+    const openingMessage = nextVoicePrompt || feedback?.response;
     if (
       !feedback?.available ||
-      !feedback.response ||
+      !openingMessage ||
+      !testCasesPassed ||
+      micCheckStatus !== "passed" ||
       isVoiceActive ||
       isVoiceStarting
     ) {
@@ -506,8 +547,15 @@ export default function Home() {
     setVoiceError("");
     setVoiceStatus("Requesting microphone access...");
     try {
+      const isResume = Boolean(nextVoicePrompt);
       if (!useVapi || !vapiRef.current || !vapiAssistantId) {
-        startBrowserVoiceInterview(feedback.response);
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error("Microphone access is not available in this browser");
+        }
+        const microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
+        microphone.getTracks().forEach((track) => track.stop());
+        startBrowserVoiceInterview(openingMessage, isResume);
+        setNextVoicePrompt("");
         return;
       }
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -520,7 +568,7 @@ export default function Home() {
         callStartResolverRef.current = resolve;
       });
       await vapiRef.current.start(vapiAssistantId, {
-        firstMessage: feedback.response,
+        firstMessage: openingMessage,
         firstMessageMode: "assistant-speaks-first",
         firstMessageInterruptionsEnabled: true,
         maxDurationSeconds: 1800,
@@ -538,45 +586,89 @@ export default function Home() {
           ),
         ]);
       }
+      setNextVoicePrompt("");
     } catch (voiceStartError) {
       callStartResolverRef.current = null;
       const message = getVoiceErrorMessage(voiceStartError);
       setVoiceError(message);
       setIsVoiceActive(false);
       setIsSpeaking(false);
-      if (feedback.available) {
-        setVoiceStatus("Vapi could not start. Switching to browser voice mode...");
-        startBrowserVoiceInterview(feedback.response);
-      } else {
-        setVoiceStatus("Voice assistant is ready to start again.");
-      }
+      setVoiceStatus("Voice assistant could not connect. You can try browser voice or answer by text.");
     } finally {
       setIsVoiceStarting(false);
     }
-  }, [isVoiceActive, isVoiceStarting, result, saveTranscript]);
+  }, [isVoiceActive, isVoiceStarting, micCheckStatus, nextVoicePrompt, result, saveTranscript, speechLanguage, testCasesPassed]);
 
-  useEffect(() => {
-    const feedback = result?.interview;
-    if (
-      !feedback?.available ||
-      !feedback.response ||
-      startedFeedbackRef.current === feedback.response
-    ) {
-      return;
+  const checkMicrophone = async () => {
+    setMicCheckStatus("checking");
+    setVoiceError("");
+    setVoiceStatus("Say a short phrase while we check your microphone...");
+    let stream: MediaStream | null = null;
+    let audioContext: AudioContext | null = null;
+    try {
+      if (!navigator.mediaDevices?.getUserMedia || !window.AudioContext) {
+        throw new Error("Microphone testing is not supported in this browser. Try the latest version of Chrome.");
+      }
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const activeTrack = stream.getAudioTracks().find((track) => track.readyState === "live" && track.enabled);
+      if (!activeTrack) throw new Error("No active microphone was found. Check your input device and browser permission.");
+      audioContext = new AudioContext();
+      await audioContext.resume();
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 1024;
+      audioContext.createMediaStreamSource(stream).connect(analyser);
+      const samples = new Uint8Array(analyser.fftSize);
+      const deadline = Date.now() + 3500;
+      let detectedAudio = false;
+      while (Date.now() < deadline && !detectedAudio) {
+        analyser.getByteTimeDomainData(samples);
+        const rms = Math.sqrt(samples.reduce((sum, sample) => sum + (sample - 128) ** 2, 0) / samples.length);
+        detectedAudio = rms > 2.5;
+        if (!detectedAudio) await new Promise((resolve) => window.setTimeout(resolve, 100));
+      }
+      if (!detectedAudio) throw new Error("No voice was detected. Check the selected microphone, then try again while speaking.");
+      setMicCheckStatus("passed");
+      setVoiceStatus("Microphone check passed. You can start the interview.");
+    } catch (error) {
+      setMicCheckStatus("idle");
+      setVoiceError(getVoiceErrorMessage(error));
+      setVoiceStatus("Microphone check did not pass. Check the device and try again.");
+    } finally {
+      stream?.getTracks().forEach((track) => track.stop());
+      if (audioContext && audioContext.state !== "closed") await audioContext.close();
     }
-    startedFeedbackRef.current = feedback.response;
-    window.setTimeout(() => void startVoiceInterview(), 0);
-  }, [result, startVoiceInterview]);
+  };
+
+  const startBrowserVoiceManually = async () => {
+    const feedback = result?.interview;
+    const openingMessage = nextVoicePrompt || feedback?.response;
+    if (!feedback?.available || !openingMessage || !testCasesPassed || micCheckStatus !== "passed" || isVoiceStarting || isVoiceActive) return;
+    setIsVoiceStarting(true);
+    setVoiceError("");
+    setVoiceStatus("Requesting microphone access...");
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error("Microphone access is not available in this browser");
+      const microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
+      microphone.getTracks().forEach((track) => track.stop());
+      const resume = Boolean(nextVoicePrompt);
+      setNextVoicePrompt("");
+      startBrowserVoiceInterview(openingMessage, resume);
+    } catch (error) {
+      setVoiceError(getVoiceErrorMessage(error));
+      setVoiceStatus("Could not access the microphone. Check browser permissions and try again.");
+    } finally {
+      setIsVoiceStarting(false);
+    }
+  };
 
   const endVoiceCall = async () => {
-    manualVoiceStopRef.current = true;
-    if (browserFallbackTimerRef.current !== null) {
-      window.clearTimeout(browserFallbackTimerRef.current);
-      browserFallbackTimerRef.current = null;
-    }
     browserVoiceActiveRef.current = false;
+    if (browserTranscriptTimerRef.current !== null) window.clearTimeout(browserTranscriptTimerRef.current);
+    browserTranscriptTimerRef.current = null;
+    browserTranscriptBufferRef.current = "";
     browserRecognitionRef.current?.stop();
     browserRecognitionRef.current = null;
+    browserSpeakRef.current = null;
     window.speechSynthesis.cancel();
     if (!vapiRef.current || !voiceStartedRef.current) {
       setIsVoiceActive(false);
@@ -615,21 +707,27 @@ export default function Home() {
     }
     if (problem.isExecutable === false) setPhase("AnalyzingPhase");
     setIsRunning(true);
+    setMicCheckStatus("idle");
     setJobStatus("active");
     setError("");
     setResult(null);
     setTranscript([]);
+    setShowReport(false);
+    setCommunicationAssessment(null);
+    setCommunicationAssessmentError("");
+    communicationAssessmentRequestedRef.current = null;
+    submissionIdRef.current = null;
+    transcriptSaveQueueRef.current = Promise.resolve();
     followUpCountRef.current = 0;
     deflectionCountRef.current = 0;
-    startedFeedbackRef.current = null;
     setVoiceError("");
-    setVoiceStatus("Voice assistant is ready");
+    setVoiceStatus("Select Start interview and allow microphone access to begin.");
 
     try {
       const response = await fetch("/api/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, language, problemDescription, problemSlug: problem.slug }),
+          body: JSON.stringify({ code, language, problemDescription, problemSlug: problem.slug, difficulty }),
       });
       const payload = (await response.json()) as
         | JobResponse
@@ -664,6 +762,7 @@ export default function Home() {
     const answer = textAnswer.trim();
     if (!answer || !result?.interview?.available) return;
     setTextAnswer("");
+    setIsReviewingTranscript(false);
     followUpCountRef.current += 1;
     saveTranscript("user", answer);
     setVoiceStatus("AI interviewer is thinking...");
@@ -696,13 +795,76 @@ export default function Home() {
         );
       }
       saveTranscript("assistant", payload.response);
+      setNextVoicePrompt(payload.response);
       setVoiceStatus(payload.response);
-      if (payload.terminated) setShowReport(true);
-      if (payload.terminated) setPhase("InterviewPhase");
+      const interviewComplete = payload.terminated || followUpCountRef.current >= followUpTargetRef.current;
+      if (browserRecognitionRef.current) {
+        setNextVoicePrompt("");
+        if (interviewComplete) {
+          browserVoiceActiveRef.current = false;
+          setIsVoiceActive(false);
+          setShowReport(true);
+          setPhase("InterviewPhase");
+          browserSpeakRef.current?.(payload.response, false);
+        } else {
+          browserVoiceActiveRef.current = true;
+          setIsVoiceActive(true);
+          browserSpeakRef.current?.(payload.response, false);
+        }
+      } else {
+        setNextVoicePrompt(payload.response);
+      }
+      if (interviewComplete) setShowReport(true);
+      if (interviewComplete) setPhase("InterviewPhase");
     } catch (answerError) {
+      setTextAnswer(answer);
+      setIsReviewingTranscript(Boolean(browserRecognitionRef.current));
       setVoiceError(answerError instanceof Error ? answerError.message : "The AI interviewer could not respond");
     }
   };
+
+  if (!difficulty) {
+    const options: { value: Difficulty; title: string; description: string }[] = [
+      { value: "easy", title: "Easy", description: "Beginner friendly questions on core concepts and clear problem solving." },
+      { value: "medium", title: "Medium", description: "Intermediate coding challenges and practical technical follow-ups." },
+      { value: "hard", title: "Hard", description: "Advanced challenges with deeper edge cases, trade-offs, and technical reasoning." },
+    ];
+    return (
+      <main className="difficulty-page">
+        <div className="difficulty-layout">
+          <header className="difficulty-topbar">
+            <Link className="brand-mark" href="/">
+              <span className="brand-symbol">C</span>
+              CODEORACLE
+            </Link>
+            <span className="difficulty-step">NEW INTERVIEW <i /> 01 / 01</span>
+          </header>
+          <section className="difficulty-card" aria-labelledby="difficulty-heading">
+            <div className="difficulty-intro">
+              <p className="eyebrow">PERSONALIZE YOUR SESSION</p>
+              <h1 id="difficulty-heading">Choose your interview level</h1>
+              <p>Select a difficulty to shape your coding challenge and the interviewer&apos;s questions.</p>
+            </div>
+            <div className="difficulty-options" aria-label="Interview difficulty">
+            {options.map((option) => (
+              <button key={option.value} type="button" className={`difficulty-option difficulty-${option.value}`} onClick={() => setDifficulty(option.value)}>
+                <span className="difficulty-option-top"><small>LEVEL {option.value === "easy" ? "01" : option.value === "medium" ? "02" : "03"}</small><span aria-hidden="true">↗</span></span>
+                <span className="difficulty-option-title">{option.title}</span>
+                <span className="difficulty-option-description">{option.description}</span>
+                <span className="difficulty-option-action">Choose {option.title.toLowerCase()} <span aria-hidden="true">→</span></span>
+              </button>
+            ))}
+            </div>
+            <footer className="difficulty-footer">
+              <span><span className="difficulty-lock" aria-hidden="true">✓</span> You can focus on the challenge. Your session starts after selection.</span>
+              <Link className="difficulty-back-link" href="/dashboard">← Back to dashboard</Link>
+            </footer>
+          </section>
+          <p className="difficulty-caption">Tailored practice. Clear feedback. Better interviews.</p>
+        </div>
+      </main>
+    );
+  }
 
   if (showReport && result) {
     const score = result.interview?.score;
@@ -715,6 +877,10 @@ export default function Home() {
     const nonEmptyLines = code.split(/\r?\n/).filter((line) => line.trim()).length;
     const executionPassed = result.exitCode === 0 && !result.timedOut;
     const transcriptEntries = transcript.slice(-10);
+    const hasCommunicationAssessment =
+      communicationAssessment?.status === "assessed" || communicationAssessment?.status === "limited";
+    const metricValue = (value: number | null | undefined) =>
+      isAssessingCommunication ? "Assessing…" : hasCommunicationAssessment && value !== null && value !== undefined ? `${value}/100` : "Not assessed";
     return (
       <main className="interview-report-page">
         <section className="interview-report-card">
@@ -797,8 +963,37 @@ export default function Home() {
               <p className="report-empty-note">No interview responses were recorded for this submission.</p>
             )}
           </section>
+          <section className="report-section" aria-labelledby="report-communication-heading">
+            <div className="report-section-heading">
+              <div>
+                <p className="eyebrow">COMMUNICATION &amp; DELIVERY</p>
+                <h2 id="report-communication-heading">Interview speaking signals</h2>
+              </div>
+              {communicationAssessment?.status === "limited" && <span className="assessment-evidence-badge">Limited evidence</span>}
+            </div>
+            <div className="report-facts-grid report-communication-grid">
+              <div className="report-fact"><span>Communication clarity</span><strong>{metricValue(communicationAssessment?.communicationClarity)}</strong></div>
+              <div className="report-fact"><span>English proficiency</span><strong>{metricValue(communicationAssessment?.englishProficiency)}</strong></div>
+              <div className="report-fact"><span>Confidence</span><strong>{metricValue(communicationAssessment?.confidence)}</strong></div>
+              <div className="report-fact"><span>Nervousness indicators</span><strong>{isAssessingCommunication ? "Assessing…" : hasCommunicationAssessment ? communicationAssessment?.nervousnessIndicators : "Not assessed"}</strong></div>
+            </div>
+            <p className="report-communication-summary">
+              {isAssessingCommunication
+                ? "Reviewing your recorded responses…"
+                : communicationAssessment?.summary ?? (communicationAssessmentError || "Communication feedback is not available.")}
+            </p>
+            {communicationAssessment?.evidence && communicationAssessment.evidence.length > 0 && (
+              <ul className="report-communication-evidence">
+                {communicationAssessment.evidence.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}
+              </ul>
+            )}
+            {communicationAssessment?.status === "not_assessed" && (
+              <p className="report-empty-note">Answer at least one interviewer question to receive communication feedback. More responses provide a more reliable assessment.</p>
+            )}
+            <p className="report-assessment-caveat">These are transcript-based coaching indicators. English proficiency reflects recorded word choice and clarity; nervousness indicators are not a clinical assessment and do not evaluate accent or pronunciation.</p>
+          </section>
           <div className="report-details">
-            <p><strong>Assessment basis:</strong> The AI score reflects the interview feedback. Execution and test counts above come directly from the code runner; category-level scores are not generated.</p>
+            <p><strong>Assessment basis:</strong> The technical score reflects code quality and interview feedback. Communication measures use only the recorded candidate transcript; execution results come directly from the code runner.</p>
             <p><strong>Candidate replies recorded:</strong> {candidateAnswers.length}. Message counts come from the saved transcript and may exclude speech that was not transcribed.</p>
           </div>
           <Link className="primary-cta report-home-button" href="/">Return to Home Page <span aria-hidden="true">-&gt;</span></Link>
@@ -834,9 +1029,32 @@ export default function Home() {
         <p className="eyebrow">LIVE TECHNICAL INTERVIEW</p>
         <h1>{problem?.title ?? "AI Interviewer"}</h1>
         <p>{result ? voiceStatus : "Reviewing your submission..."}</p>
-        {result?.interview?.available && !isVoiceActive && (
+        {voiceError && <p className="voice-error-message" role="alert">{voiceError}</p>}
+        {result?.interview?.available && !testCasesPassed && <p className="mic-check-notice">Pass the coding test cases before starting the voice interview.</p>}
+        {result?.interview?.available && testCasesPassed && micCheckStatus !== "passed" && (
+          <div className="mic-check-notice" role="status">
+            <span>Check your microphone. Say a short phrase when prompted; interview controls unlock after we detect your voice.</span>
+            <button type="button" className="start-voice-button" onClick={() => void checkMicrophone()} disabled={micCheckStatus === "checking"}>
+              {micCheckStatus === "checking" ? "Checking microphone..." : "Check microphone"}
+            </button>
+          </div>
+        )}
+        {result?.interview?.available && testCasesPassed && micCheckStatus === "passed" && (
+          <p className="mic-check-success" role="status">Microphone verified. Your interview is ready to start.</p>
+        )}
+        {result?.interview?.available && (
+          <label className="speech-language-control">
+            Browser voice recognition language
+            <select value={speechLanguage} disabled={isVoiceActive || isVoiceStarting} onChange={(event) => setSpeechLanguage(event.target.value as typeof speechLanguage)}>
+              <option value="en-IN">English (India)</option>
+              <option value="en-US">English (United States)</option>
+              <option value="en-GB">English (United Kingdom)</option>
+            </select>
+          </label>
+        )}
+        {result?.interview?.available && testCasesPassed && micCheckStatus === "passed" && !isVoiceActive && (
           <button type="button" className="start-voice-button" onClick={() => void startVoiceInterview()} disabled={isVoiceStarting}>
-            {isVoiceStarting ? "Starting interview..." : "Start interview"}
+            {isVoiceStarting ? "Starting interview..." : nextVoicePrompt ? "Continue interview" : "Start interview"}
           </button>
         )}
         {result && !result.interview?.available && (
@@ -844,16 +1062,22 @@ export default function Home() {
             View assessment report
           </button>
         )}
+        {useVapi && result?.interview?.available && testCasesPassed && micCheckStatus === "passed" && !isVoiceActive && (
+          <button type="button" className="start-voice-button" onClick={() => void startBrowserVoiceManually()} disabled={isVoiceStarting}>
+            {isVoiceStarting ? "Requesting microphone..." : "Use browser voice instead"}
+          </button>
+        )}
         <div className="avatar-transcript">
           {transcript.slice(-4).map((entry, index) => <p key={`${entry.role}-${index}`}><strong>{entry.role === "user" ? "You" : "Interviewer"}:</strong> {entry.text}</p>)}
         </div>
-        {result?.interview?.available && !isVoiceActive && (
+        {result?.interview?.available && testCasesPassed && micCheckStatus === "passed" && !isVoiceActive && (
           <form className="avatar-answer-form" onSubmit={submitTextAnswer}>
             <label htmlFor="text-answer">Answer the interviewer</label>
+            {isReviewingTranscript && <p className="transcript-review-hint">Review and correct the recognized speech before sending. Nothing is submitted until you choose Send answer.</p>}
             <textarea
               id="text-answer"
               value={textAnswer}
-              onChange={(event) => setTextAnswer(event.target.value)}
+              onChange={(event) => { setTextAnswer(event.target.value); setIsReviewingTranscript(false); }}
               placeholder="Explain your approach..."
               rows={3}
             />
@@ -868,7 +1092,7 @@ export default function Home() {
   }
 
   return (
-    <main className="editor-shell">
+    <main className={`editor-shell${problem?.isExecutable === false ? " editor-shell-static-review" : ""}`}>
       <header className="topbar">
         <div>
           <p className="eyebrow">CODEORACLE</p>
@@ -913,12 +1137,12 @@ export default function Home() {
         </div>
       </header>
 
-      <section className="workspace">
+      <section className={`workspace${problem?.isExecutable === false ? " workspace-static-review" : ""}`}>
         <div className="panel editor-panel">
           <div className="panel-heading">
-            <span>Source</span>
+            <span>{problem?.isExecutable === false ? "Design response" : "Source"}</span>
             <span className="file-name">
-              main.{language === "javascript" ? "js" : language}
+              {problem?.isExecutable === false ? "JavaScript comments" : `main.${language === "javascript" ? "js" : language}`}
             </span>
           </div>
           <div className="editor-container">
@@ -989,7 +1213,7 @@ export default function Home() {
             <span className="ai-badge">GEMINI</span>
           </div>
           <label className="problem-label" htmlFor="problem">
-            Problem statement (function only)
+            {problem?.isExecutable === false ? "Design challenge" : "Problem statement"}
           </label>
           <textarea
             id="problem"
@@ -997,8 +1221,14 @@ export default function Home() {
             value={problemDescription}
             onChange={(event) => setProblemDescription(event.target.value)}
             placeholder="Describe the problem you are solving..."
-            rows={4}
+            rows={problem?.isExecutable === false ? 10 : 4}
           />
+          {problem?.isExecutable === false && (
+            <div className="design-response-note">
+              <strong>Response format</strong>
+              <span>Provide your analysis as JavaScript comments (//), addressing each section below. Runnable code is not expected.</span>
+            </div>
+          )}
           <div className="chat-messages" aria-live="polite">
             <div className={`assistant-avatar${isSpeaking ? " speaking" : ""}`}>
               <div className="assistant-avatar-face" aria-hidden="true">
@@ -1006,6 +1236,28 @@ export default function Home() {
               </div>
               <span>{voiceStatus}</span>
             </div>
+            <label className="speech-language-control">
+              Browser voice recognition language
+              <select value={speechLanguage} disabled={isVoiceActive || isVoiceStarting} onChange={(event) => setSpeechLanguage(event.target.value as typeof speechLanguage)}>
+                <option value="en-IN">English (India)</option>
+                <option value="en-US">English (United States)</option>
+                <option value="en-GB">English (United Kingdom)</option>
+              </select>
+            </label>
+            {result?.interview?.available && !testCasesPassed && (
+              <div className="mic-check-notice" role="status">Pass the coding test cases before starting the voice interview.</div>
+            )}
+            {result?.interview?.available && testCasesPassed && micCheckStatus !== "passed" && (
+              <div className="mic-check-notice" role="status">
+                <span>Say a short phrase to verify your microphone. Voice interview controls unlock after your voice is detected.</span>
+                <button type="button" className="start-voice-button" onClick={() => void checkMicrophone()} disabled={micCheckStatus === "checking"}>
+                  {micCheckStatus === "checking" ? "Checking microphone..." : "Check microphone"}
+                </button>
+              </div>
+            )}
+            {result?.interview?.available && testCasesPassed && micCheckStatus === "passed" && (
+              <p className="mic-check-success" role="status">Microphone verified. Your interview is ready to start.</p>
+            )}
             {isVoiceActive && (
               <button
                 type="button"
@@ -1015,21 +1267,28 @@ export default function Home() {
                 End call
               </button>
             )}
-            {result?.interview?.available && !isVoiceActive && (
+            {result?.interview?.available && testCasesPassed && micCheckStatus === "passed" && !isVoiceActive && (
               <button
                 type="button"
                 className="start-voice-button"
                 onClick={() => void startVoiceInterview()}
                 disabled={isVoiceStarting}
               >
-                {isVoiceStarting ? "Starting voice interview..." : "Start voice interview"}
+                {isVoiceStarting ? "Starting voice interview..." : nextVoicePrompt ? "Continue interview" : "Start voice interview"}
+              </button>
+            )}
+            {useVapi && result?.interview?.available && testCasesPassed && micCheckStatus === "passed" && !isVoiceActive && (
+              <button type="button" className="start-voice-button" onClick={() => void startBrowserVoiceManually()} disabled={isVoiceStarting}>
+                {isVoiceStarting ? "Requesting microphone..." : "Use browser voice instead"}
               </button>
             )}
             <div className="chat-bubble interviewer">
               <span className="chat-author">AI interviewer</span>
               {result
                 ? result.interview?.response ?? "Execution finished. Waiting for interview feedback..."
-                : "Run your code and I will review the result without giving away the solution."}
+                : problem?.isExecutable === false
+                  ? "Select Analyze Code to have the interviewer review your design response and provide feedback."
+                  : "Run your code to have the interviewer review your solution and its output, then provide feedback."}
             </div>
             {result?.interview?.score !== null && result?.interview?.score !== undefined && (
               <span className="chat-note">AI assessment score: {result.interview.score}/100</span>
@@ -1040,6 +1299,24 @@ export default function Home() {
               </span>
             )}
             {voiceError && <span className="chat-note">{voiceError}</span>}
+            {result?.interview?.available && testCasesPassed && micCheckStatus === "passed" && !isVoiceActive && (
+              <form className="avatar-answer-form" onSubmit={submitTextAnswer}>
+                <label htmlFor="text-answer">{isReviewingTranscript ? "Review your answer" : "Answer the interviewer"}</label>
+                {isReviewingTranscript && (
+                  <p className="transcript-review-hint">Check the recognized text, correct any mistakes, then send it to the interviewer.</p>
+                )}
+                <textarea
+                  id="text-answer"
+                  value={textAnswer}
+                  onChange={(event) => { setTextAnswer(event.target.value); setIsReviewingTranscript(false); }}
+                  placeholder="Your recognized speech will appear here. You can also type your answer."
+                  rows={4}
+                />
+                <button type="submit" className="start-voice-button" disabled={!textAnswer.trim()}>
+                  {isReviewingTranscript ? "Send reviewed answer" : "Send answer"}
+                </button>
+              </form>
+            )}
           </div>
         </aside>
       </section>

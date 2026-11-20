@@ -19,6 +19,15 @@ type SharedReport = {
   spaceComplexity: string;
   code: string;
   transcript: Array<{ role: "user" | "assistant"; text: string; timestamp: string }>;
+  communicationAssessment: {
+    status: "assessed" | "limited" | "not_assessed" | "unavailable";
+    communicationClarity: number | null;
+    englishProficiency: number | null;
+    confidence: number | null;
+    nervousnessIndicators: "low" | "moderate" | "high" | "not_assessed";
+    summary: string;
+    evidence: string[];
+  } | null;
   createdAt: string;
 };
 
@@ -42,6 +51,8 @@ export default async function SharedReportPage({
   const report = await getReport(shareToken);
   const sourceLines = report.code.split(/\r?\n/);
   const testSummary = report.stdout?.match(/Passed\s+(\d+)\s*\/\s*(\d+)\s+tests?/i);
+  const communication = report.communicationAssessment;
+  const hasCommunicationScores = communication?.status === "assessed" || communication?.status === "limited";
   return (
     <main className="dashboard-shell shared-report-page">
       <header className="dashboard-header shared-report-header">
@@ -68,6 +79,18 @@ export default async function SharedReportPage({
           <p><span>Space complexity</span><strong>{report.spaceComplexity}</strong></p>
         </div>
       </section>
+      <section className="assessment-card shared-report-section">
+        <div className="shared-section-heading"><div><span className="eyebrow">COMMUNICATION &amp; DELIVERY</span><h2>Interview speaking signals</h2></div>{communication?.status === "limited" && <span className="assessment-evidence-badge">Limited evidence</span>}</div>
+        <div className="report-facts-grid shared-report-facts">
+          <div className="report-fact"><span>Communication clarity</span><strong>{hasCommunicationScores && communication.communicationClarity !== null ? `${communication.communicationClarity}/100` : "Not assessed"}</strong></div>
+          <div className="report-fact"><span>English proficiency</span><strong>{hasCommunicationScores && communication.englishProficiency !== null ? `${communication.englishProficiency}/100` : "Not assessed"}</strong></div>
+          <div className="report-fact"><span>Confidence</span><strong>{hasCommunicationScores && communication.confidence !== null ? `${communication.confidence}/100` : "Not assessed"}</strong></div>
+          <div className="report-fact"><span>Nervousness indicators</span><strong>{hasCommunicationScores ? communication.nervousnessIndicators : "Not assessed"}</strong></div>
+        </div>
+        <p className="report-communication-summary">{communication?.summary ?? "Communication feedback is not available for this report."}</p>
+        {communication?.evidence.length ? <ul className="report-communication-evidence">{communication.evidence.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul> : null}
+        <p className="report-assessment-caveat">These transcript-based coaching indicators are not a clinical assessment and do not evaluate accent or pronunciation.</p>
+      </section>
       <section className="assessment-card shared-report-section shared-details-section">
         <div className="shared-section-heading"><div><span className="eyebrow">ASSESSMENT DETAILS</span><h2>Interview and execution</h2></div><span className={`shared-execution-status ${report.timedOut || report.exitCode !== 0 ? "is-warning" : "is-success"}`}>{report.timedOut ? "Timed out" : report.exitCode === 0 ? "Execution passed" : "Execution failed"}</span></div>
         <div className="shared-details-content">
@@ -91,7 +114,7 @@ export default async function SharedReportPage({
         <div className="shared-section-heading"><div><span className="eyebrow">SOLUTION</span><h2>Submitted code</h2></div><span className="shared-language">{report.language}</span></div>
         <pre className="shared-code"><code>{report.code}</code></pre>
       </section>
-      <p className="shared-assessment-note">Assessment basis: The AI score reflects the available interview feedback. This interview report does not generate separate communication skills or nervousness ratings; the transcript is included for context.</p>
+      <p className="shared-assessment-note">Assessment basis: The overall score reflects technical interview feedback. Communication and delivery measures use the recorded candidate transcript.</p>
       <section className="assessment-card shared-report-section shared-transcript-section">
         <div className="shared-section-heading"><div><span className="eyebrow">CONVERSATION</span><h2>Interview transcript</h2></div><span className="shared-entry-count">{report.transcript.length} {report.transcript.length === 1 ? "message" : "messages"}</span></div>
         {report.transcript.length === 0 ? (

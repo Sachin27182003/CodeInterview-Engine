@@ -27,6 +27,8 @@ export function runInDocker(
   code: string,
   language: SupportedLanguage,
   problemSlug: string,
+  runnerEntryPoint?: string,
+  runnerTestCases?: Array<{ args: unknown[]; expected: unknown }>,
 ): Promise<ExecutionOutput> {
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -57,6 +59,9 @@ export function runInDocker(
         IMAGE,
         ...commandForLanguage[language],
         problemSlug,
+        ...(runnerEntryPoint && runnerTestCases
+          ? [runnerEntryPoint, Buffer.from(JSON.stringify(runnerTestCases)).toString("base64")]
+          : []),
       ],
       { stdio: ["pipe", "pipe", "pipe"] },
     );

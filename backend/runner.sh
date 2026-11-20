@@ -5,7 +5,7 @@ language="${1:-}"
 problem="${2:-}"
 
 case "$problem:$language" in
-  two-sum:*|frontend-state-updates:javascript|frontend-state-updates:python|frontend-render-window:javascript|frontend-render-window:python|backend-concurrency-window:javascript|backend-concurrency-window:python|backend-rate-limiter:javascript|backend-rate-limiter:python|indexed-log-search:javascript|indexed-log-search:python|retry-budget:javascript|retry-budget:python|data-deduplicate-events:javascript|data-deduplicate-events:python|security-audit-log:javascript|security-audit-log:python)
+  two-sum:*|role-easy-*:javascript|role-easy-*:python|frontend-state-updates:javascript|frontend-state-updates:python|frontend-render-window:javascript|frontend-render-window:python|backend-concurrency-window:javascript|backend-concurrency-window:python|backend-rate-limiter:javascript|backend-rate-limiter:python|indexed-log-search:javascript|indexed-log-search:python|retry-budget:javascript|retry-budget:python|data-deduplicate-events:javascript|data-deduplicate-events:python|find-maximum-number:javascript|find-maximum-number:python|count-vowels:javascript|count-vowels:python|valid-parentheses:javascript|valid-parentheses:python|merge-overlapping-intervals:javascript|merge-overlapping-intervals:python|longest-increasing-subsequence:javascript|longest-increasing-subsequence:python|minimum-window-substring:javascript|minimum-window-substring:python|security-audit-log:javascript|security-audit-log:python)
     ;;
   *)
     printf 'Unsupported problem/language combination: %s/%s\n' "$problem" "$language" >&2
@@ -16,6 +16,66 @@ esac
 run_with_timeout() {
   exec timeout 5s "$@"
 }
+
+runner_entry_point="${3:-}"
+runner_test_cases="${4:-}"
+case "$problem" in
+  role-easy-*)
+    if [ -z "$runner_entry_point" ] || [ -z "$runner_test_cases" ]; then
+      printf 'Missing grading data for beginner role question: %s\n' "$problem" >&2
+      exit 2
+    fi
+    case "$language" in
+      javascript)
+        {
+          cat
+          cat <<'EOF'
+
+const { isDeepStrictEqual } = require("node:util");
+const __entryPoint = process.env.RUNNER_ENTRY_POINT;
+if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(__entryPoint)) throw new Error("Invalid question entry point");
+const __run = eval(__entryPoint);
+const __cases = JSON.parse(Buffer.from(process.env.RUNNER_TEST_CASES, "base64").toString("utf8"));
+for (const { args, expected } of __cases) {
+  const actual = __run(...args);
+  if (!isDeepStrictEqual(actual, expected)) {
+    throw new Error(`Expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+  }
+}
+console.log(`Passed ${__cases.length}/${__cases.length} tests`);
+EOF
+        } | RUNNER_ENTRY_POINT="$runner_entry_point" RUNNER_TEST_CASES="$runner_test_cases" run_with_timeout node --input-type=commonjs -
+        ;;
+      python)
+        {
+          cat
+          cat <<'EOF'
+
+import base64
+import json
+import os
+
+_entry_point = os.environ["RUNNER_ENTRY_POINT"]
+if not _entry_point.isidentifier():
+    raise ValueError("Invalid question entry point")
+_cases = json.loads(base64.b64decode(os.environ["RUNNER_TEST_CASES"]).decode("utf-8"))
+_function = globals()[_entry_point]
+for _case in _cases:
+    _actual = _function(*_case["args"])
+    if _actual != _case["expected"]:
+        raise AssertionError(f"Expected {_case['expected']!r}, got {_actual!r}")
+print(f"Passed {len(_cases)}/{len(_cases)} tests")
+EOF
+        } | RUNNER_ENTRY_POINT="$runner_entry_point" RUNNER_TEST_CASES="$runner_test_cases" run_with_timeout python3 -
+        ;;
+      *)
+        printf 'Beginner role questions support JavaScript and Python only\n' >&2
+        exit 2
+        ;;
+    esac
+    exit $?
+    ;;
+esac
 
 case "$language" in
   javascript)
@@ -148,6 +208,82 @@ for (const [events, expected] of tests) {
   const original = JSON.stringify(events);
   const actual = deduplicateEvents(events);
   if (JSON.stringify(actual) !== JSON.stringify(expected) || JSON.stringify(events) !== original) throw new Error(`Expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+}
+console.log(`Passed ${tests.length}/${tests.length} tests`);
+EOF
+          ;;
+        find-maximum-number)
+          cat <<'EOF'
+
+const tests = [
+  [[3, 1, 8, 2], 8],
+  [[-5, -2, -9], -2],
+  [[4, 4, 4], 4],
+];
+for (const [numbers, expected] of tests) {
+  const actual = findMaximum(numbers);
+  if (actual !== expected) throw new Error(`Expected ${expected}, got ${actual}`);
+}
+console.log(`Passed ${tests.length}/${tests.length} tests`);
+EOF
+          ;;
+        count-vowels)
+          cat <<'EOF'
+
+const tests = [["Interview", 4], ["rhythm", 0], ["AEIOU", 5]];
+for (const [text, expected] of tests) {
+  const actual = countVowels(text);
+  if (actual !== expected) throw new Error(`Expected ${expected}, got ${actual}`);
+}
+console.log(`Passed ${tests.length}/${tests.length} tests`);
+EOF
+          ;;
+        valid-parentheses)
+          cat <<'EOF'
+
+const tests = [["()[]{}", true], ["([{}])", true], ["(]", false], ["([)]", false], ["(()", false]];
+for (const [text, expected] of tests) {
+  const actual = isValidBrackets(text);
+  if (actual !== expected) throw new Error(`Expected ${expected}, got ${actual}`);
+}
+console.log(`Passed ${tests.length}/${tests.length} tests`);
+EOF
+          ;;
+        merge-overlapping-intervals)
+          cat <<'EOF'
+
+const tests = [
+  [[[1, 3], [2, 6], [8, 10], [15, 18]], [[1, 6], [8, 10], [15, 18]]],
+  [[[1, 4], [4, 5]], [[1, 5]]],
+  [[], []],
+  [[[5, 7], [1, 2]], [[1, 2], [5, 7]]],
+];
+for (const [intervals, expected] of tests) {
+  const original = JSON.stringify(intervals);
+  const actual = mergeIntervals(intervals);
+  if (JSON.stringify(actual) !== JSON.stringify(expected) || JSON.stringify(intervals) !== original) throw new Error(`Expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+}
+console.log(`Passed ${tests.length}/${tests.length} tests`);
+EOF
+          ;;
+        longest-increasing-subsequence)
+          cat <<'EOF'
+
+const tests = [[[10, 9, 2, 5, 3, 7, 101, 18], 4], [[0, 1, 0, 3, 2, 3], 4], [[7, 7, 7, 7], 1], [[], 0]];
+for (const [numbers, expected] of tests) {
+  const actual = longestIncreasingSubsequence(numbers);
+  if (actual !== expected) throw new Error(`Expected ${expected}, got ${actual}`);
+}
+console.log(`Passed ${tests.length}/${tests.length} tests`);
+EOF
+          ;;
+        minimum-window-substring)
+          cat <<'EOF'
+
+const tests = [["ADOBECODEBANC", "ABC", "BANC"], ["a", "a", "a"], ["a", "aa", ""], ["aa", "aa", "aa"]];
+for (const [source, target, expected] of tests) {
+  const actual = minimumWindow(source, target);
+  if (actual !== expected) throw new Error(`Expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
 }
 console.log(`Passed ${tests.length}/${tests.length} tests`);
 EOF
@@ -298,6 +434,78 @@ for events, expected in tests:
     actual = deduplicate_events(events)
     if actual != expected or events != original:
         raise AssertionError(f"Expected {expected}, got {actual}")
+print(f"Passed {len(tests)}/{len(tests)} tests")
+EOF
+          ;;
+        find-maximum-number)
+          cat <<'EOF'
+
+tests = [([3, 1, 8, 2], 8), ([-5, -2, -9], -2), ([4, 4, 4], 4)]
+for numbers, expected in tests:
+    actual = find_maximum(numbers)
+    if actual != expected:
+        raise AssertionError(f"Expected {expected}, got {actual}")
+print(f"Passed {len(tests)}/{len(tests)} tests")
+EOF
+          ;;
+        count-vowels)
+          cat <<'EOF'
+
+tests = [("Interview", 4), ("rhythm", 0), ("AEIOU", 5)]
+for text, expected in tests:
+    actual = count_vowels(text)
+    if actual != expected:
+        raise AssertionError(f"Expected {expected}, got {actual}")
+print(f"Passed {len(tests)}/{len(tests)} tests")
+EOF
+          ;;
+        valid-parentheses)
+          cat <<'EOF'
+
+tests = [("()[]{}", True), ("([{}])", True), ("(]", False), ("([)]", False), ("(()", False)]
+for text, expected in tests:
+    actual = is_valid_brackets(text)
+    if actual != expected:
+        raise AssertionError(f"Expected {expected}, got {actual}")
+print(f"Passed {len(tests)}/{len(tests)} tests")
+EOF
+          ;;
+        merge-overlapping-intervals)
+          cat <<'EOF'
+
+tests = [
+    ([[1, 3], [2, 6], [8, 10], [15, 18]], [[1, 6], [8, 10], [15, 18]]),
+    ([[1, 4], [4, 5]], [[1, 5]]),
+    ([], []),
+    ([[5, 7], [1, 2]], [[1, 2], [5, 7]]),
+]
+for intervals, expected in tests:
+    original = [interval[:] for interval in intervals]
+    actual = merge_intervals(intervals)
+    if actual != expected or intervals != original:
+        raise AssertionError(f"Expected {expected}, got {actual}")
+print(f"Passed {len(tests)}/{len(tests)} tests")
+EOF
+          ;;
+        longest-increasing-subsequence)
+          cat <<'EOF'
+
+tests = [([10, 9, 2, 5, 3, 7, 101, 18], 4), ([0, 1, 0, 3, 2, 3], 4), ([7, 7, 7, 7], 1), ([], 0)]
+for numbers, expected in tests:
+    actual = longest_increasing_subsequence(numbers)
+    if actual != expected:
+        raise AssertionError(f"Expected {expected}, got {actual}")
+print(f"Passed {len(tests)}/{len(tests)} tests")
+EOF
+          ;;
+        minimum-window-substring)
+          cat <<'EOF'
+
+tests = [("ADOBECODEBANC", "ABC", "BANC"), ("a", "a", "a"), ("a", "aa", ""), ("aa", "aa", "aa")]
+for source, target, expected in tests:
+    actual = minimum_window(source, target)
+    if actual != expected:
+        raise AssertionError(f"Expected {expected!r}, got {actual!r}")
 print(f"Passed {len(tests)}/{len(tests)} tests")
 EOF
           ;;
