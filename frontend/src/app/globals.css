@@ -1570,7 +1570,7 @@ select, .run-button {
 }
 .account-profile-label { letter-spacing: -.025em; }
 .home-account-menu { position: relative; z-index: 30; }
-.home-profile-trigger { gap: 8px; }
+.home-profile-trigger { gap: 14px; }
 .landing-page .home-account-menu > .home-account-popover {
   position: absolute;
   display: block;
@@ -1716,7 +1716,8 @@ select, .run-button {
   .account-actions { gap: 6px; }
   .account-profile-card,
   .account-signout-card { min-height: 34px; border-radius: 9px; padding: 3px 7px; font-size: 11px; }
-  .account-profile-card { min-width: 100px; gap: 6px; }
+  .account-profile-card { min-width: 100px; gap: 10px; }
+  .home-profile-trigger { gap: 18px; }
   .account-signout-card { min-width: 82px; }
   .account-avatar { width: 23px; height: 23px; flex-basis: 23px; font-size: 11px; }
   .dashboard-shell-header { padding-top: 0; }
@@ -1730,7 +1731,8 @@ select, .run-button {
   .account-dashboard-link { min-height: 32px; padding-inline: 8px; border-radius: 8px; font-size: 10px; }
   .account-profile-card,
   .account-signout-card { min-height: 32px; border-radius: 8px; padding: 3px 5px; font-size: 10px; }
-  .account-profile-card { min-width: 86px; gap: 4px; }
+  .account-profile-card { min-width: 86px; gap: 8px; }
+  .home-profile-trigger { gap: 14px; }
   .account-signout-card { min-width: 68px; }
   .account-avatar { width: 21px; height: 21px; flex-basis: 21px; font-size: 10px; }
   .dashboard-header { padding-inline: 16px; }
